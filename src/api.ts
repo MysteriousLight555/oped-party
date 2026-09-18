@@ -30,7 +30,24 @@ export const api = {
   sessionReport: (id: string, fmt: 'html' | 'md' | 'xlsx' | 'json', inline = false) =>
     `/api/sessions/${id}/report/${fmt}${inline ? '?inline=1' : ''}`,
   allReport: (fmt: 'html' | 'md' | 'xlsx' | 'json', inline = false) =>
-    `/api/reports/all/${fmt}${inline ? '?inline=1' : ''}`
+    `/api/reports/all/${fmt}${inline ? '?inline=1' : ''}`,
+
+  /** 单曲级合并写入：只动一个人的总分/收藏，避免整份覆盖 */
+  patchPart: (
+    id: string,
+    page: number,
+    body: { person: string; score?: number | null; fav?: boolean }
+  ) =>
+    req<{ page: number; scores: Record<string, number>; favorites: string[] }>(
+      `/sessions/${id}/part/${page}`,
+      { method: 'PUT', body: JSON.stringify(body) }
+    ),
+  sheetUrl: (id: string) => `/api/sessions/${id}/sheet`,
+  importSheets: (id: string, sheets: unknown[]) =>
+    req<{ addedPersons: string[]; scores: number; favorites: number }>(
+      `/sessions/${id}/import`,
+      { method: 'POST', body: JSON.stringify(sheets) }
+    )
 }
 
 export function download(url: string) {

@@ -85,7 +85,12 @@
             <el-button>⋯</el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item @click="rename(s)">重命名</el-dropdown-item>
+                <el-dropdown-item @click="download(api.sheetUrl(s.id))">
+                  下载打分单（发同学）
+                </el-dropdown-item>
+                <el-dropdown-item @click="copySheetLink(s)">复制在线打分链接</el-dropdown-item>
+                <el-dropdown-item @click="pickImport(s)">导入打分单…</el-dropdown-item>
+                <el-dropdown-item divided @click="rename(s)">重命名</el-dropdown-item>
                 <el-dropdown-item @click="toggleDone(s)">{{
                   s.done ? '标记为进行中' : '标记为已完成'
                 }}</el-dropdown-item>
@@ -136,12 +141,22 @@
         <el-button type="primary" :loading="creating" @click="create">创建并开始打分</el-button>
       </template>
     </el-dialog>
+
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".json,application/json"
+      multiple
+      style="display: none"
+      @change="onImportFiles"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, download } from '../api'
 import type { Config, SessionMeta } from '../types'
@@ -154,6 +169,8 @@ const showCreate = ref(false)
 const creating = ref(false)
 const createTab = ref('bvid')
 const createForm = ref({ bvidInput: '', name: '', manualTitle: '', lines: '' })
+const fileInput = ref<HTMLInputElement | null>(null)
+let importTarget = ''
 
 async function refresh() {
   sessions.value = await api.listSessions()
@@ -242,6 +259,52 @@ async function remove(s: SessionMeta) {
   await api.deleteSession(s.id)
   ElMessage.success('已删除')
   refresh()
+}
+
+// ---------- 个人打分单（线上会议场景） ----------
+function pickImport(s: SessionMeta) {
+  importTarget = s.id
+  fileInput.value?.click()
+}
+
+async function onImportFiles(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files?.length) return
+  const sheets: unknown[] = []
+  try {
+    for (const f of Array.from(files)) {
+      sheets.push(JSON.parse(await f.text()))
+    }
+  } catch {
+    ElMessage.error('有文件不是合法的 JSON 打分单')
+    input.value = ''
+    return
+  }
+  try {
+    const r = await api.importSheets(importTarget, sheets)
+    ElMessage.success(
+      `导入成功：${r.scores} 个分数、${r.favorites} 个收藏` +
+        (r.addedPersons.length ? `；新成员 ${r.addedPersons.join('、')} 已自动加入配置` : '')
+    )
+    config.value = await api.getConfig()
+    refresh()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+  input.value = ''
+}
+
+function copySheetLink(s: SessionMeta) {
+  const url = `${location.origin}${location.pathname}#/sheet/${s.id}`
+  navigator.clipboard
+    .writeText(url)
+    .then(() =>
+      ElMessage.success(
+        '已复制（按当前页面地址生成）。同学若在公网访问：先运行「开远程打分.bat」，再在通道网址打开的页面里复制这个链接'
+      )
+    )
+    .catch(() => ElMessage.info(`复制失败，手动复制：${url}`))
 }
 </script>
 

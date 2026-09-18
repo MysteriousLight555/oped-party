@@ -18,6 +18,7 @@ import { sessionStats, allStats } from './stats.js'
 import { renderSessionHtml, renderAllHtml } from './report-html.js'
 import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
+import { renderSheetHtml } from './sheet.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // 端口避开常见服务（4310 是 OpenTelemetry 默认端口，本机可能有采集端点占用 IPv6 侧）
@@ -204,6 +205,99 @@ app.get('/api/reports/all/:format', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: `报告生成失败：${e.message}` })
   }
+})
+
+// ---------- 单曲级合并写入（悬浮面板 / 在线个人打分页共用，避免整份覆盖竞态） ----------
+app.put('/api/sessions/:id/part/:page', (req, res) => {
+  const s = getSession(req.params.id)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const part = s.parts.find(p => p.page === Number(req.params.page))
+  if (!part) return res.status(404).json({ error: '分P不存在' })
+  const { person, score, fav } = req.body || {}
+  if (!person || typeof person !== 'string') {
+    return res.status(400).json({ error: '缺少 person' })
+  }
+  if (score !== undefined) {
+    if (score === null || score === '') {
+      delete part.scores[person]
+    } else {
+      const n = Number(score)
+      if (Number.isNaN(n)) return res.status(400).json({ error: '分数不是数字' })
+      part.scores[person] = n
+    }
+  }
+  if (fav !== undefined) {
+    part.favorites = part.favorites || []
+    const i = part.favorites.indexOf(person)
+    if (fav && i < 0) part.favorites.push(person)
+    if (!fav && i >= 0) part.favorites.splice(i, 1)
+  }
+  saveSession(s)
+  ok(res).json({ page: part.page, scores: part.scores, favorites: part.favorites })
+})
+
+// ---------- 离线个人打分单（单文件 HTML，发给同学自己填） ----------
+app.get('/api/sessions/:id/sheet', (req, res) => {
+  const session = getSession(req.params.id)
+  if (!session) return res.status(404).json({ error: '期次不存在' })
+  const html = renderSheetHtml(session, loadConfig())
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="sheet.html"; filename*=UTF-8''${encodeURIComponent(`${session.name}-打分单.html`)}`
+  )
+  res.send(html)
+})
+
+// ---------- 导入个人打分单 JSON（支持一次多份） ----------
+app.post('/api/sessions/:id/import', (req, res) => {
+  const s = getSession(req.params.id)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const body = req.body || {}
+  const sheets = Array.isArray(body) ? body : Array.isArray(body.sheets) ? body.sheets : [body]
+  const config = loadConfig()
+  config.persons = config.persons || []
+  const added = []
+  let total = 0
+  let favTotal = 0
+
+  for (const sheet of sheets) {
+    if (!sheet || typeof sheet !== 'object') continue
+    if (sheet.app !== 'oped-party-sheet') {
+      return res.status(400).json({ error: '不是本工具导出的打分单文件' })
+    }
+    if (sheet.sessionId && sheet.sessionId !== s.id) {
+      return res.status(400).json({
+        error: `「${sheet.sessionName || sheet.sessionId}」的打分单不属于这一期「${s.name}」`
+      })
+    }
+    const person = String(sheet.person || '').trim()
+    if (!person) continue
+    if (!config.persons.includes(person)) {
+      config.persons.push(person)
+      added.push(person)
+    }
+    for (const [page, score] of Object.entries(sheet.scores || {})) {
+      const part = s.parts.find(p => p.page === Number(page))
+      if (!part) continue
+      const n = Number(score)
+      if (Number.isNaN(n)) continue
+      part.scores = part.scores || {}
+      part.scores[person] = Math.round(n)
+      total++
+    }
+    for (const page of sheet.favorites || []) {
+      const part = s.parts.find(p => p.page === Number(page))
+      if (!part) continue
+      part.favorites = part.favorites || []
+      if (!part.favorites.includes(person)) part.favorites.push(person)
+      favTotal++
+    }
+  }
+
+  if (added.length) saveConfig(config)
+  saveSession(s)
+  ok(res).json({ addedPersons: added, scores: total, favorites: favTotal })
 })
 
 // ---------- 前端静态资源 ----------

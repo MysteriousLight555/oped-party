@@ -9,6 +9,16 @@ const router = createRouter({
       name: 'work',
       component: () => import('./views/WorkbenchView.vue')
     },
+    {
+      path: '/session/:id/pip',
+      name: 'pip',
+      component: () => import('./views/PipView.vue')
+    },
+    {
+      path: '/session/:id/sheet',
+      name: 'sheet',
+      component: () => import('./views/SheetView.vue')
+    },
     { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue') }
   ]
 })

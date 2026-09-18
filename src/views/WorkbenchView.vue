@@ -9,6 +9,7 @@
           <span :class="['sav', saveStatus]">{{ saveText }}</span>
         </span>
       </div>
+      <el-button @click="openPip" title="置顶小窗，全屏看视频时也能打分">📺 悬浮面板</el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
       <el-dropdown trigger="click">
         <el-button>报告 ↓</el-button>
@@ -319,6 +320,8 @@ function leave() {
 onBeforeUnmount(() => {
   if (saveStatus.value === 'saving') doSave()
   document.removeEventListener('keydown', globalKey)
+  window.removeEventListener('focus', refreshSilently)
+  window.clearInterval(pollTimer)
 })
 
 // ---------- 打分 ----------
@@ -403,6 +406,56 @@ function globalKey(e: KeyboardEvent) {
   else if (e.key === 'ArrowLeft') prev()
 }
 onMounted(() => document.addEventListener('keydown', globalKey))
+
+// ---------- 悬浮面板 ----------
+function openPip() {
+  const url = `${location.origin}${location.pathname}#/pip/${sessionId}`
+  const dpip = (
+    window as unknown as {
+      documentPictureInPicture?: {
+        requestWindow: (o: object) => Promise<Window>
+        window: Window | null
+      }
+    }
+  ).documentPictureInPicture
+  if (dpip?.requestWindow) {
+    dpip
+      .requestWindow({ width: 380, height: 380 })
+      .then(w => {
+        w.location.href = url
+      })
+      .catch(() => window.open(url, 'oped-pip', 'width=380,height=400'))
+  } else {
+    window.open(url, 'oped-pip', 'width=380,height=400')
+  }
+}
+
+// ---------- 远程写入同步（悬浮面板/在线打分页改了数据，这里跟上） ----------
+async function refreshSilently() {
+  if (!session.value || !cfg.value) return
+  if (saveStatus.value === 'saving') return
+  const ae = document.activeElement
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return
+  try {
+    const s = await api.getSession(sessionId)
+    if (s.parts.length !== session.value.parts.length) return
+    ready = false
+    normalize(s, cfg.value)
+    session.value = s
+    currentIndex.value = Math.min(currentIndex.value, s.parts.length - 1)
+    await nextTick()
+    ready = true
+  } catch {
+    /* 忽略瞬时错误 */
+  }
+}
+let pollTimer: number | undefined
+onMounted(() => {
+  window.addEventListener('focus', refreshSilently)
+  pollTimer = window.setInterval(() => {
+    if (!document.hidden) refreshSilently()
+  }, 8000)
+})
 
 // ---------- 其他 ----------
 function openBili() {

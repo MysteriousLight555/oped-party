@@ -13,6 +13,18 @@
 3. **打分工作台**：左边是分 P 列表，中间给当前曲打分——输完一格按回车跳下一格，最后一个回车自动进下一首；行尾 ★ 收藏；支持短评、标签、跳过（菜单类分 P）
 4. **报告**：工作台或期次卡片上一键「预览排行榜 / 下载 HTML / Markdown / Excel / JSON」；首页还有跨期的「全期总榜」（歌曲去重总榜、歌手榜、番剧榜、各期回顾）
 
+### 线上鉴赏会（腾讯会议，不在同一 WiFi）
+
+按方便程度三选一，可组合：
+
+- **语音报分**（零配置）：你开着悬浮面板，大家会议里报分，你敲数字——最简单。
+- **个人打分单**（零网络依赖）：期次卡片 `⋯` →「下载打分单（发同学）」，得到一个单文件网页；发到会议聊天/群里，同学在自己电脑打开、点分、导出 JSON 发回来；你再 `⋯` →「导入打分单…」多选合并，新人名字会自动加入配置。
+- **在线打分**（实时落库）：双击 `开远程打分.bat`（需先 `winget install --id Cloudflare.cloudflared` 装一次通道），把打印出的 `https://xxxx.trycloudflare.com` 网址发群里，同学浏览器打开、首页进期次或直接用你复制的「在线打分链接」点分，实时保存。**用完 Ctrl+C 关掉**——窗口开着期间任何人拿到网址都能改数据。
+
+### 悬浮打分面板（📺 悬浮面板）
+
+工作台顶部的「📺 悬浮面板」用浏览器的画中画窗口（Chrome/Edge 116+）弹出一个**始终置顶**的小打分窗：只放总分 + 收藏 + 切歌，回车流不变。全屏看 B 站视频、开会共享屏幕时都能直接打分，不用切窗口。浏览器不支持时自动退化为普通小窗。
+
 数据全部存在 `data/` 目录（JSON 文件），备份就是复制这个目录。
 
 ## 开发
@@ -29,17 +41,22 @@ npm run typecheck  # vue-tsc 类型检查
 
 ```
 server/           Express 后端
-  index.js        API 路由 + 静态资源
+  index.js        API 路由 + 静态资源（含单曲级合并写入/打分单导入）
   bili.js         B站视频信息/分P代理（带缓存，data/cache/）
   parse.js        分P标题解析（先行/正式OP·ED、【主题曲】等模式）
   store.js        config / sessions JSON 存取
   stats.js        榜单统计（单期 + 跨期聚合）
   report-*.js     HTML / Markdown / Excel 报告生成
+  sheet.js        离线个人打分单（单文件 HTML）生成
 src/              Vue3 + TS + Element Plus 前端
-  views/HomeView.vue        期次列表 / 新建
-  views/WorkbenchView.vue   打分工作台
+  views/HomeView.vue        期次列表 / 新建 / 打分单导入导出
+  views/WorkbenchView.vue   打分工作台（含悬浮面板入口）
+  views/PipView.vue         悬浮置顶快速打分面板
+  views/SheetView.vue       在线个人打分页（即点即存）
   views/SettingsView.vue    参与人/维度/标签配置
 data/             运行数据（gitignore）
+启动鉴赏会.bat     日常启动
+开远程打分.bat     可选：cloudflared 临时公网通道（在线打分）
 ```
 
 ## 说明
