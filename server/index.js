@@ -19,6 +19,7 @@ import { renderSessionHtml, renderAllHtml } from './report-html.js'
 import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
 import { renderSheetHtml } from './sheet.js'
+import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection } from './ai.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // 端口避开常见服务（4310 是 OpenTelemetry 默认端口，本机可能有采集端点占用 IPv6 侧）
@@ -100,6 +101,8 @@ app.post('/api/sessions', async (req, res) => {
       parsed: parseTitle(p.part),
       scores: {},
       dimScores: {},
+      personTags: {},
+      personComments: {},
       favorites: [],
       comment: '',
       tags: [],
@@ -213,7 +216,7 @@ app.put('/api/sessions/:id/part/:page', (req, res) => {
   if (!s) return res.status(404).json({ error: '期次不存在' })
   const part = s.parts.find(p => p.page === Number(req.params.page))
   if (!part) return res.status(404).json({ error: '分P不存在' })
-  const { person, score, fav } = req.body || {}
+  const { person, score, fav, personTags, personComment } = req.body || {}
   if (!person || typeof person !== 'string') {
     return res.status(400).json({ error: '缺少 person' })
   }
@@ -232,8 +235,28 @@ app.put('/api/sessions/:id/part/:page', (req, res) => {
     if (fav && i < 0) part.favorites.push(person)
     if (!fav && i >= 0) part.favorites.splice(i, 1)
   }
+  if (personTags !== undefined) {
+    part.personTags = part.personTags || {}
+    if (Array.isArray(personTags) && personTags.length) {
+      part.personTags[person] = [...new Set(personTags.map(t => String(t).trim()).filter(Boolean))]
+    } else {
+      delete part.personTags[person]
+    }
+  }
+  if (personComment !== undefined) {
+    part.personComments = part.personComments || {}
+    const c = String(personComment ?? '').trim()
+    if (c) part.personComments[person] = c
+    else delete part.personComments[person]
+  }
   saveSession(s)
-  ok(res).json({ page: part.page, scores: part.scores, favorites: part.favorites })
+  ok(res).json({
+    page: part.page,
+    scores: part.scores,
+    favorites: part.favorites,
+    personTags: part.personTags,
+    personComments: part.personComments
+  })
 })
 
 // ---------- 离线个人打分单（单文件 HTML，发给同学自己填） ----------
@@ -260,6 +283,7 @@ app.post('/api/sessions/:id/import', (req, res) => {
   const added = []
   let total = 0
   let favTotal = 0
+  let tagTotal = 0
 
   for (const sheet of sheets) {
     if (!sheet || typeof sheet !== 'object') continue
@@ -293,11 +317,58 @@ app.post('/api/sessions/:id/import', (req, res) => {
       if (!part.favorites.includes(person)) part.favorites.push(person)
       favTotal++
     }
+    // 个人标签（离线打分单 v2 起携带）：合并去重，不覆盖已有
+    for (const [page, tags] of Object.entries(sheet.tags || {})) {
+      const part = s.parts.find(p => p.page === Number(page))
+      if (!part || !Array.isArray(tags)) continue
+      part.personTags = part.personTags || {}
+      const merged = new Set(part.personTags[person] || [])
+      for (const t of tags) {
+        const s2 = String(t).trim()
+        if (s2) merged.add(s2)
+      }
+      if (merged.size) part.personTags[person] = [...merged]
+      tagTotal++
+    }
   }
 
   if (added.length) saveConfig(config)
   saveSession(s)
-  ok(res).json({ addedPersons: added, scores: total, favorites: favTotal })
+  ok(res).json({ addedPersons: added, scores: total, favorites: favTotal, tags: tagTotal })
+})
+
+// ---------- AI 锐评（DeepSeek） ----------
+// Key 存 data/ai.json，独立于 config，任何接口都不明文回传
+app.get('/api/ai/config', (req, res) => ok(res).json(aiInfo(loadAiConfig())))
+
+app.put('/api/ai/config', (req, res) => {
+  const ai = saveAiConfig(req.body || {})
+  ok(res).json(aiInfo(ai))
+})
+
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const reply = await testConnection(loadAiConfig())
+    ok(res).json({ ok: true, reply })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+app.post('/api/sessions/:id/ai-review', async (req, res) => {
+  const session = getSession(req.params.id)
+  if (!session) return res.status(404).json({ error: '期次不存在' })
+  const config = loadConfig()
+  const st = sessionStats(session, config)
+  try {
+    const text = await generateReview(session, st, config, loadAiConfig())
+    const review = { text, model: loadAiConfig().model, createdAt: new Date().toISOString() }
+    session.aiReviews = [review, ...(session.aiReviews || [])].slice(0, 5)
+    saveSession(session)
+    ok(res).json({ review, total: session.aiReviews.length })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
 })
 
 // ---------- 前端静态资源 ----------
