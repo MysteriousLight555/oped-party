@@ -1,4 +1,6 @@
-/** HTML 排行榜报告：单文件自包含，可直接发群里打开 */
+/** HTML 排行榜报告：单文件自包含，可直接发群里打开
+ *  反差/争议体系：总分=主观总评（独立），反差=主观−维度参考，争议=总分标准差
+ */
 import { songTitle, biliLink } from './stats.js'
 
 function esc(s) {
@@ -17,10 +19,30 @@ function scoreClass(v) {
   return 'score'
 }
 
-function personChips(part, persons) {
+function fmtDvg(x) {
+  if (x == null) return ''
+  const v = Math.round(x * 10) / 10
+  return (v > 0 ? '+' : '') + v.toFixed(1)
+}
+
+function dvgSpan(x, cls = 'dv') {
+  if (x == null) return '<span class="dim">—</span>'
+  return `<span class="${cls} ${x >= 0 ? 'pos' : 'neg'}">Δ${fmtDvg(x)}</span>`
+}
+
+function stdCell(std, hot, voters) {
+  if (std == null || voters < 2) return '<span class="dim">—</span>'
+  return hot ? `<span class="fire">🔥 ${std}</span>` : String(std)
+}
+
+function personChips(personsMap, persons) {
   const chips = (persons || [])
-    .filter(pn => typeof part.scores?.[pn] === 'number')
-    .map(pn => `<i class="pc">${esc(pn)}<b>${part.scores[pn]}</b></i>`)
+    .filter(pn => typeof personsMap?.[pn]?.score === 'number')
+    .map(pn => {
+      const x = personsMap[pn]
+      const dv = x.ref != null ? dvgSpan(x.div) : ''
+      return `<i class="pc">${esc(pn)}<b>${x.score}</b>${dv}</i>`
+    })
     .join('')
   return chips || '<span class="dim">—</span>'
 }
@@ -58,6 +80,7 @@ main{max-width:1080px;margin:-30px auto 0;padding:0 16px 40px}
 section{background:var(--card);border-radius:14px;box-shadow:0 2px 14px rgba(0,0,0,.06);padding:22px 24px;margin-bottom:22px}
 h2{font-size:19px;margin:0 0 16px;display:flex;align-items:center;gap:8px}
 h2::before{content:"";width:4px;height:18px;border-radius:2px;background:linear-gradient(180deg,var(--pink),var(--blue))}
+.legend{color:var(--muted);font-size:12.5px;margin:-8px 0 14px;line-height:1.7}
 .podium{display:flex;gap:14px;flex-wrap:wrap}
 .pcard{flex:1 1 240px;border-radius:14px;padding:18px;color:#fff;position:relative;min-width:220px}
 .pcard .medal{font-size:26px}
@@ -78,7 +101,15 @@ tr:hover td{background:#fafbfd}
 .s-god{color:#f25d5d}.s-hot{color:#fb7299}.s-good{color:#23ade5}
 .pc{font-style:normal;background:#f1f2f4;border-radius:6px;padding:1px 7px;margin:1px 3px 1px 0;display:inline-block;font-size:12.5px;color:#61666d}
 .pc b{margin-left:5px;color:var(--ink)}
+.dv{font-style:normal;font-size:10.5px;font-weight:600;border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:1px;white-space:nowrap}
+.dv.pos{color:#c24545;background:#fdeeee}
+.dv.neg{color:#2a6fb8;background:#eaf3fc}
+td .dv,.dvg2{font-size:12px}
+.fire{color:#e25822;font-weight:700}
 .tag{font-style:normal;background:#fff0f4;color:var(--pink);border:1px solid #ffd6e2;border-radius:20px;padding:0 9px;font-size:12px;display:inline-block;margin:1px 3px 1px 0}
+.tag.w2{font-size:13.5px;padding:1px 11px}
+.tag.w3{font-size:15px;padding:2px 13px;font-weight:600}
+.tagcloud{line-height:2.4}
 .star{color:#f7a35c;font-weight:600;white-space:nowrap}
 .cmt{color:#61666d;font-size:13px;max-width:230px}
 .dim{color:var(--muted)}
@@ -87,6 +118,12 @@ tr:hover td{background:#fafbfd}
 .pbox .pavggiven{color:var(--muted);font-size:12.5px;font-weight:400;margin-left:6px}
 .pbox ol{margin:0;padding-left:22px}
 .pbox li{margin:3px 0;font-size:14px}
+.hcard{border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.hcard .htop{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px}
+.hcard .hstd{color:#e25822;font-weight:700;white-space:nowrap}
+.hcard ol{margin:6px 0 0;padding-left:0;list-style:none}
+.hcard li{margin:7px 0;font-size:13.5px;line-height:1.7}
+.hcard .cmt2{color:#61666d}
 .mini{color:var(--muted);font-size:13px}
 .mini li{margin:2px 0}
 .favbox ul{margin:0;padding-left:20px;font-size:14px}
@@ -110,6 +147,11 @@ ${body}
 </html>`
 }
 
+const LEGEND =
+  '总分是每人独立打出的<b>主观总评</b>，不与维度分换算 · ' +
+  '<span class="dv pos">Δ+</span>=情怀溢价 / <span class="dv neg">Δ−</span>=套路压分（反差 = 主观总评 − 维度参考分，参考分按 音乐本体/音画定制/本格共鸣 加权）· ' +
+  '争议 = 大家总分的标准差'
+
 function podium(st, session) {
   const medals = ['🥇', '🥈', '🥉']
   const classes = ['p1', 'p2', 'p3']
@@ -118,12 +160,13 @@ function podium(st, session) {
     .map((r, i) => {
       const p = r.part
       const pr = p.parsed || {}
+      const dvg = r.div != null ? `<div class="pmeta">反差 ${fmtDvg(r.div)}（主观 vs 维度参考）</div>` : ''
       return `<div class="pcard ${classes[i]}">
 <div class="medal">${medals[i]}</div>
 <div class="pavg">${r.avg ?? '—'}</div>
 <div class="psong">「${esc(songTitle(p))}」</div>
 <div class="pmeta">${esc(pr.artist || '')}${pr.anime ? ` · 《${esc(pr.anime)}》` : ''}${pr.kind ? ` · ${esc(pr.kind)}` : ''}</div>
-<div class="pmeta">★ ${r.favCount} 人收藏</div>
+<div class="pmeta">★ ${r.favCount} 人收藏</div>${dvg}
 </div>`
     })
     .join('')
@@ -140,7 +183,9 @@ function boardTable(st, session) {
 <td>${songCell(session, p)}${pr.artist ? `<div class="mini">${esc(pr.artist)}</div>` : ''}</td>
 <td class="mini">${esc(pr.anime || '')}${pr.kind ? `<div>${esc(pr.kind)} · ${fmtDur(p.duration)}</div>` : ''}</td>
 <td class="num"><span class="${scoreClass(r.avg)}">${r.avg ?? '—'}</span></td>
-<td>${personChips(p, st.persons)}</td>
+<td class="num">${stdCell(r.std, r.hot, r.voters.length)}</td>
+<td class="num">${dvgSpan(r.div, 'dv dvg2')}</td>
+<td>${personChips(r.persons, st.persons)}</td>
 ${st.dims
   .map(
     d =>
@@ -154,9 +199,71 @@ ${st.dims
     })
     .join('')
   return `<table>
-<thead><tr><th>#</th><th>曲名</th><th>番剧</th><th>均分</th><th>各人评分</th>${dimHead}<th>收藏</th><th>标签</th><th>短评</th></tr></thead>
+<thead><tr><th>#</th><th>曲名</th><th>番剧</th><th>均分</th><th title="大家总分的标准差，越大越吵">争议</th><th title="主观总评 − 维度参考分">反差</th><th>各人评分</th>${dimHead}<th>收藏</th><th>标签</th><th>短评</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>`
+}
+
+function hotSection(st, session) {
+  if (!st.controversial.length) return ''
+  const cards = st.controversial
+    .map(r => {
+      const p = r.part
+      const pr = p.parsed || {}
+      const lines = Object.entries(r.persons || {})
+        .filter(([, x]) => typeof x.score === 'number')
+        .sort((a, b) => b[1].score - a[1].score)
+        .map(([who, x]) => {
+          const bits = [`<b>${esc(who)}</b> <span class="score">${x.score}</span>`]
+          if (x.ref != null) {
+            bits.push(dvgSpan(x.div))
+            bits.push(`<span class="mini">参考 ${x.ref}</span>`)
+          }
+          if (x.tags?.length) bits.push(tagPills(x.tags))
+          if (x.comment) bits.push(`<span class="cmt2">“${esc(x.comment)}”</span>`)
+          return `<li>${bits.join(' ')}</li>`
+        })
+        .join('')
+      const collective =
+        p.tags?.length || p.comment
+          ? `<div class="mini" style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px">${p.tags?.length ? tagPills(p.tags) : ''} ${p.comment ? esc(p.comment) : ''}</div>`
+          : ''
+      return `<div class="hcard">
+<div class="htop"><span>${songCell(session, p)} <span class="mini">${esc(pr.artist || '')}</span></span><span class="hstd">🔥 ${r.std}</span></div>
+<ol>${lines}</ol>${collective}
+</div>`
+    })
+    .join('')
+  return `<section id="hot"><h2>🔥 争议焦点</h2>
+<p class="legend">总分标准差 ≥ ${st.hotLine} 判定为吵翻。这里的"评价构成"逐人摊开——同一首歌，谁给的是情怀分、谁给的是套路分，一眼见底。</p>
+<div class="cols">${cards}</div></section>`
+}
+
+function dvgSection(st, session) {
+  if (!st.premiums.length && !st.penalties.length) return ''
+  const row = r =>
+    `<li>${songCell(session, r.part)} ${dvgSpan(r.div, 'dv dvg2')} <span class="mini">主观 ${r.avg} vs 维度参考 ${r.refAvg}</span>${r.part.tags?.length ? ` ${tagPills(r.part.tags)}` : ''}</li>`
+  return `<section id="dvg"><h2>⚖️ 反差榜</h2>
+<p class="legend">反差 = 主观总评 − 维度参考分。正得越狠，越接近"编曲差点意思，但我情投意合"的本格溢价；负得越狠，越接近"写得再合格，也齁得我发慌"的套路罚分。这一栏是老饕的骄傲与倔强，不许被均分吃掉。</p>
+<div class="cols">
+${st.premiums.length ? `<div class="pbox"><h3>💗 本格溢价 Top ${st.premiums.length}</h3><ol>${st.premiums.map(row).join('')}</ol></div>` : ''}
+${st.penalties.length ? `<div class="pbox"><h3>🧪 套路罚分 Top ${st.penalties.length}</h3><ol>${st.penalties.map(row).join('')}</ol></div>` : ''}
+</div></section>`
+}
+
+function tagSection(st) {
+  if (!st.tagStats.length) return ''
+  const max = st.tagStats[0].count
+  const pills = st.tagStats
+    .map(t => {
+      const ratio = t.count / max
+      const cls = ratio >= 0.66 ? 'w3' : ratio >= 0.33 ? 'w2' : ''
+      return `<em class="tag ${cls}">${esc(t.name)} × ${t.count}</em>`
+    })
+    .join('')
+  return `<section id="tags"><h2>🏷️ 标签情绪统计</h2>
+<p class="legend">集体标签与每个人的个人标签一起计数。「工业糖精」「拼好曲式-生硬」扎堆出现，就是全场对工业套路的合围。</p>
+<div class="tagcloud">${pills}</div></section>`
 }
 
 function renderSessionHtml(session, st) {
@@ -167,7 +274,7 @@ function renderSessionHtml(session, st) {
   const dimSections = st.dimBoards
     .map(
       b => `<section id="dim-${esc(b.dim.key)}">
-<h2>${esc(b.dim.name)}榜 Top ${b.top.length}</h2>
+<h2>${esc(b.dim.name)}榜 Top ${b.top.length}${b.dim.weight != null ? ` <span class="mini">权重 ${b.dim.weight}%</span>` : ''}</h2>
 <table><tbody>
 ${b.top
   .map(
@@ -208,16 +315,29 @@ ${st.skipped.length ? `<p class="mini">跳过 ${st.skipped.length} 首：${st.sk
 </section>`
       : ''
 
+  const navBits = [
+    '<a href="#board">总榜</a>',
+    st.controversial.length ? '<a href="#hot">争议焦点</a>' : '',
+    st.premiums.length || st.penalties.length ? '<a href="#dvg">反差榜</a>' : '',
+    st.tagStats.length ? '<a href="#tags">标签</a>' : '',
+    ...st.dimBoards.map(b => `<a href="#dim-${esc(b.dim.key)}">${esc(b.dim.name)}榜</a>`),
+    '<a href="#fav">收藏</a>',
+    '<a href="#persons">个人榜</a>'
+  ].filter(Boolean)
+
   return baseHtml(
     `${session.name} · 排行榜`,
     `<div class="hero">
 <h1>${esc(session.name)}</h1>
 <p class="sub">${videoLink} · ${date} · ${st.persons.length} 人参与 · 评了 ${st.votedCount}/${st.totalActive} 首</p>
-<p class="nav"><a href="#board">总榜</a>${st.dimBoards.map(b => `<a href="#dim-${esc(b.dim.key)}">${esc(b.dim.name)}榜</a>`).join('')}<a href="#fav">收藏</a><a href="#persons">个人榜</a></p>
+<p class="nav">${navBits.join('')}</p>
 </div>
 <main>
 ${st.ranked.length ? `<section class="podium-sec" style="padding:0;background:none;box-shadow:none">${podium(st, session)}</section>` : ''}
-<section id="board"><h2>总榜（${st.votedCount} 首）</h2>${st.ranked.length ? boardTable(st, session) : '<p class="mini">还没有任何评分。</p>'}</section>
+<section id="board"><h2>总榜（${st.votedCount} 首）</h2>${st.ranked.length ? `<p class="legend">${LEGEND}</p>${boardTable(st, session)}` : '<p class="mini">还没有任何评分。</p>'}</section>
+${hotSection(st, session)}
+${dvgSection(st, session)}
+${tagSection(st)}
 ${dimSections}
 ${favSection}
 ${personSection}
@@ -258,12 +378,38 @@ function renderAllHtml(sessions, st) {
 <td>${name}${s.artist ? `<div class="mini">${esc(s.artist)}</div>` : ''}</td>
 <td class="mini">${s.anime.map(a => `《${esc(a)}》`).join('')}</td>
 <td class="num"><span class="${scoreClass(s.avg)}">${s.avg ?? '—'}</span></td>
+<td class="num">${stdCell(s.std, s.std >= st.hotLine, s.voterCount)}</td>
+<td class="num">${dvgSpan(s.div, 'dv dvg2')}</td>
 <td class="num mini">${s.voterCount} 票</td>
 <td class="star">${s.favCount ? `★ ${s.favCount}` : ''}</td>
 <td class="mini">${s.sources.map(x => esc(x.session.name)).join('、')}</td>
 </tr>`
     })
     .join('')
+
+  const hotSection =
+    st.controversial.length
+      ? `<section id="hot"><h2>🔥 争议焦点（跨期）</h2>
+<p class="legend">总分标准差 ≥ ${st.hotLine} 判定为吵翻。</p>
+<table><thead><tr><th>#</th><th>曲名</th><th>争议</th><th>均分</th><th>反差</th><th>番剧</th><th>期次</th></tr></thead>
+<tbody>${st.controversial
+        .map(
+          (s, i) =>
+            `<tr><td class="num rank">${i + 1}</td><td>${esc(s.song)}${s.artist ? ` <span class="mini">${esc(s.artist)}</span>` : ''}</td>
+<td class="num"><span class="fire">🔥 ${s.std}</span></td>
+<td class="num"><span class="${scoreClass(s.avg)}">${s.avg ?? '—'}</span></td>
+<td class="num">${dvgSpan(s.div, 'dv dvg2')}</td>
+<td class="mini">${s.anime.map(a => `《${esc(a)}》`).join('')}</td>
+<td class="mini">${s.sources.map(x => esc(x.session.name)).join('、')}</td></tr>`
+        )
+        .join('')}</tbody></table></section>`
+      : ''
+
+  const tagSection = st.tagStats.length
+    ? `<section id="tags"><h2>🏷️ 标签情绪统计</h2><div class="tagcloud">${st.tagStats
+        .map(t => `<em class="tag">${esc(t.name)} × ${t.count}</em>`)
+        .join('')}</div></section>`
+    : ''
 
   const reviewCards = st.reviews
     .map(
@@ -282,9 +428,11 @@ function renderAllHtml(sessions, st) {
 <p class="nav"><a href="#board">总榜</a><a href="#artist">歌手榜</a><a href="#anime">番剧榜</a><a href="#reviews">各期回顾</a></p>
 </div>
 <main>
-<section id="board"><h2>歌曲总榜（跨期去重）</h2><table>
-<thead><tr><th>#</th><th>曲名</th><th>番剧</th><th>均分</th><th>票数</th><th>收藏</th><th>出现期次</th></tr></thead>
+<section id="board"><h2>歌曲总榜（跨期去重）</h2><p class="legend">${LEGEND}</p><table>
+<thead><tr><th>#</th><th>曲名</th><th>番剧</th><th>均分</th><th>争议</th><th>反差</th><th>票数</th><th>收藏</th><th>出现期次</th></tr></thead>
 <tbody>${boardRows}</tbody></table></section>
+${hotSection}
+${tagSection}
 <section id="artist"><h2>歌手榜 Top ${st.byArtist.length}</h2><table>
 <thead><tr><th>#</th><th>歌手</th><th>曲目</th><th>均分</th><th>最佳曲</th><th>收藏</th></tr></thead>
 <tbody>${artistRows}</tbody></table></section>

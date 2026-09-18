@@ -1,4 +1,6 @@
-/** Excel 报告（exceljs）：总榜 / 每人明细 / 分维度 / 收藏 / 未评 */
+/** Excel 报告（exceljs）：总榜 / 争议分析 / 每人明细 / 分维度 / 标签统计 / 收藏 / 未评
+ *  反差 = 主观总评 − 维度参考分；争议 = 总分标准差
+ */
 import ExcelJS from 'exceljs'
 import { songTitle, biliLink } from './stats.js'
 
@@ -20,6 +22,12 @@ function linkCell(cell, url, text) {
   cell.font = { color: { argb: 'FF00AEEC' }, underline: true }
 }
 
+function fmtDvg(x) {
+  if (x == null) return null
+  const v = Math.round(x * 10) / 10
+  return (v > 0 ? '+' : '') + v.toFixed(1)
+}
+
 export async function buildSessionWorkbook(session, st) {
   const wb = new ExcelJS.Workbook()
   wb.creator = 'OP/ED 鉴赏会'
@@ -34,6 +42,9 @@ export async function buildSessionWorkbook(session, st) {
     { header: '番剧', key: 'anime', width: 22 },
     { header: '类型', key: 'kind', width: 9 },
     { header: '均分', key: 'avg', width: 8 },
+    { header: `争议(标准差,≥${st.hotLine}🔥)`, key: 'std', width: 16 },
+    { header: '反差(主观-参考)', key: 'dvg', width: 15 },
+    { header: '维度参考分', key: 'ref', width: 11 },
     ...st.persons.map(p => ({ header: p, key: `p_${p}`, width: 9 })),
     ...st.dims.map(d => ({ header: `${d.name}均分`, key: `d_${d.key}`, width: 11 })),
     { header: '收藏人数', key: 'fav', width: 9 },
@@ -52,6 +63,9 @@ export async function buildSessionWorkbook(session, st) {
       anime: pr.anime || '',
       kind: pr.kind || '',
       avg: r.avg,
+      std: r.voters.length >= 2 ? (r.hot ? `🔥 ${r.std}` : r.std) : null,
+      dvg: fmtDvg(r.div),
+      ref: r.refAvg,
       ...Object.fromEntries(st.persons.map(pn => [`p_${pn}`, p.scores?.[pn] ?? null])),
       ...Object.fromEntries(st.dims.map(d => [`d_${d.key}`, r.dims[d.key] ?? null])),
       fav: r.favCount || null,
@@ -64,6 +78,49 @@ export async function buildSessionWorkbook(session, st) {
     if (link) linkCell(added.getCell('link'), link, '打开')
   })
   styleHeader(ws)
+
+  // ---- 争议分析：逐人摊开评价构成（总分/参考/反差/个人标签/个人短评）
+  const wh = wb.addWorksheet('争议分析')
+  wh.columns = [
+    { header: '争议', key: 'std', width: 12 },
+    { header: '曲名', key: 'song', width: 32 },
+    { header: '评分人', key: 'person', width: 10 },
+    { header: '主观总分', key: 'score', width: 9 },
+    ...st.dims.map(d => ({ header: `${d.name}(${d.weight ?? ''})`, key: `d_${d.key}`, width: 11 })),
+    { header: '维度参考', key: 'ref', width: 9 },
+    { header: '反差', key: 'dvg', width: 8 },
+    { header: '个人标签', key: 'ptags', width: 22 },
+    { header: '个人短评', key: 'pcomment', width: 34 },
+    { header: '全场标签', key: 'tags', width: 18 },
+    { header: '全场短评', key: 'comment', width: 30 }
+  ]
+  for (const r of st.controversial) {
+    const p = r.part
+    const perRows = Object.entries(r.persons || {}).filter(([, x]) => typeof x.score === 'number')
+    perRows.forEach(([pn, x], idx) => {
+      const dimVals = Object.fromEntries(
+        st.dims.map(d => [
+          `d_${d.key}`,
+          ((p.dimScores || {})[d.key] || {})[pn] ?? null
+        ])
+      )
+      wh.addRow({
+        std: idx === 0 ? (r.hot ? `🔥 ${r.std}` : r.std) : null,
+        song: idx === 0 ? songTitle(p) : null,
+        person: pn,
+        score: x.score,
+        ...dimVals,
+        ref: x.ref,
+        dvg: fmtDvg(x.div),
+        ptags: (x.tags || []).join('、'),
+        pcomment: x.comment || '',
+        tags: idx === 0 ? (p.tags || []).join('、') : null,
+        comment: idx === 0 ? p.comment || '' : null
+      })
+    })
+    wh.addRow({})
+  }
+  styleHeader(wh)
 
   // ---- 每人明细
   const wd = wb.addWorksheet('每人明细')
@@ -106,6 +163,17 @@ export async function buildSessionWorkbook(session, st) {
       })
     })
     styleHeader(wx)
+  }
+
+  // ---- 标签统计
+  if (st.tagStats.length) {
+    const wt = wb.addWorksheet('标签统计')
+    wt.columns = [
+      { header: '标签', key: 'tag', width: 26 },
+      { header: '次数', key: 'count', width: 8 }
+    ]
+    st.tagStats.forEach(t => wt.addRow({ tag: t.name, count: t.count }))
+    styleHeader(wt)
   }
 
   // ---- 收藏
@@ -157,6 +225,8 @@ export async function buildAllWorkbook(sessions, st) {
     { header: '歌手', key: 'artist', width: 22 },
     { header: '番剧', key: 'anime', width: 26 },
     { header: '均分', key: 'avg', width: 8 },
+    { header: `争议(标准差,≥${st.hotLine}🔥)`, key: 'std', width: 16 },
+    { header: '反差(主观-参考)', key: 'dvg', width: 15 },
     { header: '票数', key: 'votes', width: 8 },
     { header: '收藏', key: 'fav', width: 8 },
     { header: '出现期次', key: 'sessions', width: 30 }
@@ -168,12 +238,24 @@ export async function buildAllWorkbook(sessions, st) {
       artist: s.artist,
       anime: s.anime.join('、'),
       avg: s.avg,
+      std: s.voterCount >= 2 ? (s.std >= st.hotLine ? `🔥 ${s.std}` : s.std) : null,
+      dvg: fmtDvg(s.div),
       votes: s.voterCount,
       fav: s.favCount || null,
       sessions: s.sources.map(x => x.session.name).join('、')
     })
   })
   styleHeader(ws)
+
+  if (st.tagStats.length) {
+    const wt = wb.addWorksheet('标签统计')
+    wt.columns = [
+      { header: '标签', key: 'tag', width: 26 },
+      { header: '次数', key: 'count', width: 8 }
+    ]
+    st.tagStats.forEach(t => wt.addRow({ tag: t.name, count: t.count }))
+    styleHeader(wt)
+  }
 
   const wa = wb.addWorksheet('歌手榜')
   wa.columns = [

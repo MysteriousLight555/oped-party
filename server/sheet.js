@@ -36,6 +36,12 @@ select:focus,input.txt:focus{border-color:var(--pink)}
 .fav{border:none;background:none;font-size:20px;color:#d5d8db;cursor:pointer;padding:0 2px}
 .fav.on{color:#f7a35c}
 input.big{width:90px;height:32px;border-radius:8px;border:1px solid #dcdfe6;font-size:15px;text-align:center}
+.tags{margin-top:7px;display:flex;flex-wrap:wrap;gap:5px}
+.tags:empty{display:none}
+.tg{border:1px solid #e3e5e9;background:#fff;color:#61666d;border-radius:20px;padding:2px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+.tg:hover{border-color:var(--pink);color:var(--pink)}
+.tg.on{background:#fff0f4;border-color:#ffd6e2;color:var(--pink);font-weight:600}
+.tgtip{color:var(--muted);font-size:11.5px;margin-right:2px;align-self:center}
 .footbar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;justify-content:center;box-shadow:0 -2px 10px rgba(0,0,0,.05)}
 .footbar button{border:none;border-radius:10px;padding:12px 26px;font-size:16px;cursor:pointer}
 #exportBtn{background:linear-gradient(120deg,#fb7299,#f06292);color:#fff;font-weight:600}
@@ -45,7 +51,7 @@ input.big{width:90px;height:32px;border-radius:8px;border:1px solid #dcdfe6;font
 
 const APP_JS = `
 const S = window.__SHEET__
-const state = { person: '', custom: '', scores: {}, favs: new Set() }
+const state = { person: '', custom: '', scores: {}, favs: new Set(), tags: {} }
 
 const personSel = document.getElementById('personSel')
 const personCustom = document.getElementById('personCustom')
@@ -154,6 +160,40 @@ for (const p of S.parts) {
   }
   sc.append(fav)
   item.append(sc)
+
+  // 个人标签：解释"为什么我给这个分"（工业糖精 / 情怀暴击…），导入后进报告的反差注解
+  if (S.tags.length) {
+    const tagsEl = document.createElement('div')
+    tagsEl.className = 'tags'
+    const tip = document.createElement('span')
+    tip.className = 'tgtip'
+    tip.textContent = '标签：'
+    tagsEl.append(tip)
+    for (const t of S.tags) {
+      const b = document.createElement('button')
+      b.className = 'tg'
+      b.textContent = t
+      b.onclick = () => {
+        if (!me()) {
+          alert('先在上面选好你是谁')
+          return
+        }
+        const cur = new Set(state.tags[p.page] || [])
+        if (cur.has(t)) {
+          cur.delete(t)
+          b.classList.remove('on')
+        } else {
+          cur.add(t)
+          b.classList.add('on')
+        }
+        if (cur.size) state.tags[p.page] = [...cur]
+        else delete state.tags[p.page]
+      }
+      tagsEl.append(b)
+    }
+    item.append(tagsEl)
+  }
+
   listEl.append(item)
 }
 updateBtn()
@@ -163,12 +203,13 @@ exportBtn.onclick = () => {
   if (!person) return
   const payload = {
     app: 'oped-party-sheet',
-    v: 1,
+    v: 2,
     sessionId: S.sessionId,
     sessionName: S.sessionName,
     person,
     scores: state.scores,
-    favorites: [...state.favs]
+    favorites: [...state.favs],
+    tags: state.tags
   }
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   const a = document.createElement('a')
@@ -194,6 +235,7 @@ export function renderSheetHtml(session, config) {
     scoreMin: config.scoreMin ?? 1,
     scoreMax: config.scoreMax ?? 10,
     persons: config.persons || [],
+    tags: config.tags || [],
     parts: (session.parts || [])
       .filter(p => !p.skipped)
       .map(p => ({
@@ -228,7 +270,7 @@ export function renderSheetHtml(session, config) {
     <div class="row" style="margin-top:8px">
       <input id="search" class="txt" placeholder="搜索曲名 / 歌手 / 番剧" style="flex:1">
     </div>
-    <p class="tip">点分数即选中，再点一下取消；★ 收藏。全部评完点底部「导出打分结果」，把 JSON 文件发回群里/会议聊天。</p>
+    <p class="tip">点分数即选中，再点一下取消；★ 收藏；「标签」是你自己的情绪判断（如 工业糖精 / 情怀暴击），可帮主持人解释你的反差分。全部评完点底部「导出打分结果」，把 JSON 文件发回群里/会议聊天。</p>
   </div>
   <div class="rowlist" id="list"></div>
 </div>
