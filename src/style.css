@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #f3f4f8;
+  color: #18191c;
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+}
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 16px 48px;
+}
+
+a { color: #00aeec; text-decoration: none; }
