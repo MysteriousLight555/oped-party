@@ -11,6 +11,13 @@
       </div>
       <el-button @click="openPip" title="置顶小窗，全屏看视频时也能打分">📺 悬浮面板</el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
+      <el-button
+        type="warning"
+        plain
+        :loading="aiLoading"
+        title="把本场聚合数据发给大模型，生成锐评与每人口味画像（按需触发）"
+        @click="openAi"
+      >✨ AI 锐评</el-button>
       <el-dropdown trigger="click">
         <el-button>报告 ↓</el-button>
         <template #dropdown>
@@ -51,7 +58,12 @@
             @click="setIndex(item.index)"
           >
             <span class="pnum">{{ item.part.page }}</span>
-            <span class="ptitle">{{ item.part.parsed?.song || item.part.title }}</span>
+            <div class="pinfo">
+              <span class="ptitle">{{ item.part.parsed?.song || item.part.title }}</span>
+              <span v-if="subOf(item.part)" class="psub">
+                <em v-if="item.part.parsed.kind" class="pk">{{ item.part.parsed.kind }}</em>{{ subOf(item.part) }}
+              </span>
+            </div>
             <span class="pbadges">
               <span v-if="statusOf(item.part) === 'done'" class="ok">✓</span>
               <span v-if="item.part.skipped" class="sk">跳</span>
@@ -97,8 +109,18 @@
             <thead>
               <tr>
                 <th></th>
-                <th>总分 <span class="range">{{ cfg.scoreMin }}~{{ cfg.scoreMax }}</span></th>
-                <th v-for="d in dims" :key="d.key">{{ d.name }}</th>
+                <th>
+                  总分（主观总评）
+                  <span class="range">{{ cfg.scoreMin }}~{{ cfg.scoreMax }}</span>
+                </th>
+                <th v-for="d in dims" :key="d.key">
+                  <span :title="d.desc || d.name">{{ d.name }}</span>
+                  <span
+                    v-if="d.weight != null"
+                    class="wt"
+                    title="参考权重：只用来换算「维度参考分」，与总分无关"
+                  >{{ d.weight }}%</span>
+                </th>
                 <th>收藏</th>
               </tr>
             </thead>
@@ -106,15 +128,23 @@
               <tr v-for="pn in cfg.persons" :key="pn">
                 <td class="pname">{{ pn }}</td>
                 <td>
-                  <input
-                    class="sin total"
-                    :value="part.scores[pn] ?? ''"
-                    @input="onCellInput($event, part.scores, pn)"
-                    @blur="clampCell(part.scores, pn)"
-                    @keydown.enter.prevent="onEnter($event)"
-                    :placeholder="`${cfg.scoreMin}-${cfg.scoreMax}`"
-                    inputmode="numeric"
-                  />
+                  <div class="totwrap">
+                    <input
+                      class="sin total"
+                      :value="part.scores[pn] ?? ''"
+                      @input="onCellInput($event, part.scores, pn)"
+                      @blur="clampCell(part.scores, pn)"
+                      @keydown.enter.prevent="onEnter($event)"
+                      :placeholder="`${cfg.scoreMin}-${cfg.scoreMax}`"
+                      inputmode="numeric"
+                    />
+                    <span
+                      v-if="dvgOf(part, pn) != null"
+                      class="dvg"
+                      :class="(dvgOf(part, pn) as number) >= 0 ? 'pos' : 'neg'"
+                      :title="`维度参考分 ${refOf(part, pn)}（按权重换算）。反差 = 主观总评 − 参考：正=情怀溢价，负=套路压分`"
+                    >Δ{{ fmtDvg(dvgOf(part, pn) as number) }}</span>
+                  </div>
                 </td>
                 <td v-for="d in dims" :key="d.key">
                   <input
@@ -140,14 +170,16 @@
             </tbody>
           </table>
           <p class="hint">
-            输完一个格子按<b>回车</b>跳到下一格，最后一个回车自动进入下一首；Alt + ←/→ 切歌。
+            输完一个格子按<b>回车</b>跳到下一格，最后一个回车自动进入下一首；Alt + ←/→ 切歌。<br />
+            总分是<b>主观总评</b>，不和维度分换算——想给情怀分、想压套路分，尽管和维度反着来，
+            <b>Δ 反差</b>（总分 − 维度参考分）会被记进报告。
           </p>
         </div>
 
         <div class="extra">
           <el-input
             v-model="part.comment"
-            placeholder="一句话短评（可选）"
+            placeholder="全场短评（可选，大家的公共印象）"
             maxlength="120"
             show-word-limit
           />
@@ -157,11 +189,54 @@
             filterable
             allow-create
             default-first-option
-            placeholder="标签（可多选，可直接输入新标签）"
+            placeholder="全场标签（可多选，可直接输入新标签）"
           >
             <el-option v-for="t in tagOptions" :key="t" :label="t" :value="t" />
           </el-select>
         </div>
+
+        <el-collapse class="annot">
+          <el-collapse-item name="annot">
+            <template #title>
+              <span class="annot-title">🪞 反差注解</span>
+              <span class="annot-sub">谁给的是情怀分/套路分、为什么——逐人记录，报告里摊开看</span>
+            </template>
+            <div v-for="pn in cfg.persons" :key="pn" class="annot-row">
+              <span class="annot-name">
+                {{ pn }}
+                <b v-if="typeof part.scores[pn] === 'number'" class="annot-score">{{
+                  part.scores[pn]
+                }}</b>
+                <span
+                  v-if="dvgOf(part, pn) != null"
+                  class="dvg"
+                  :class="(dvgOf(part, pn) as number) >= 0 ? 'pos' : 'neg'"
+                >Δ{{ fmtDvg(dvgOf(part, pn) as number) }}</span>
+              </span>
+              <el-select
+                :model-value="part.personTags?.[pn] ?? []"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                size="small"
+                placeholder="个人标签，如 工业糖精 / 情怀暴击"
+                class="annot-tags"
+                @update:model-value="(v: string[]) => setPersonTags(pn, v)"
+              >
+                <el-option v-for="t in tagOptions" :key="t" :label="t" :value="t" />
+              </el-select>
+              <el-input
+                :model-value="part.personComments?.[pn] ?? ''"
+                size="small"
+                placeholder="一句话注解（可选）"
+                maxlength="80"
+                class="annot-cmt"
+                @update:model-value="(v: string) => setPersonComment(pn, v)"
+              />
+            </div>
+          </el-collapse-item>
+        </el-collapse>
 
         <div class="navrow">
           <el-button @click="prev" :disabled="currentIndex === 0">← 上一首</el-button>
@@ -170,6 +245,27 @@
         </div>
       </section>
     </div>
+
+    <el-dialog v-model="aiDlg" :title="aiLoading ? '✨ AI 锐评 · 生成中…' : '✨ AI 锐评'" width="660px" top="5vh">
+      <div v-if="aiLoading" class="ai-loading">
+        <span class="ai-spinner"></span>
+        <span>正在通读全场数据并撰写锐评（榜单、争议、反差、标签、短评），通常 10~60 秒…</span>
+      </div>
+      <template v-else>
+        <el-alert v-if="aiError" type="error" :title="aiError" show-icon :closable="false" />
+        <div v-if="aiText" class="ai-text">{{ aiText }}</div>
+        <div v-if="aiText" class="ai-meta">
+          {{ aiModel }} · {{ aiAt }} · 已存为本期第 {{ aiCount }} 份锐评
+        </div>
+      </template>
+      <template #footer>
+        <el-button v-if="aiText && !aiLoading" @click="copyAi">复制全文</el-button>
+        <el-button @click="aiDlg = false">关闭</el-button>
+        <el-button type="primary" :loading="aiLoading" @click="genAi">
+          {{ aiText ? '重新生成' : aiError ? '重试' : '生成锐评' }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="editDlg" title="修正歌曲信息" width="480px">
       <el-form label-width="70px">
@@ -235,6 +331,8 @@ function normalize(s: Session, c: Config) {
     p.scores = p.scores || {}
     p.dimScores = p.dimScores || {}
     for (const d of c.dimensions) p.dimScores[d.key] = p.dimScores[d.key] || {}
+    p.personTags = p.personTags || {}
+    p.personComments = p.personComments || {}
     p.favorites = p.favorites || []
     p.tags = p.tags || []
     p.comment = p.comment ?? ''
@@ -279,9 +377,54 @@ const filteredParts = computed(() => {
 function hasScore(p: Part) {
   return Object.values(p.scores || {}).some(v => typeof v === 'number')
 }
+
+// ---------- 反差：维度参考分（按权重归一化）与 主观总评 − 参考分 ----------
+function refOf(p: Part, pn: string): number | null {
+  const dimsAll = cfg.value?.dimensions.filter(d => d.enabled) || []
+  const vals: { v: number; w: number }[] = []
+  for (const d of dimsAll) {
+    const v = p.dimScores?.[d.key]?.[pn]
+    if (typeof v === 'number') vals.push({ v, w: d.weight && d.weight > 0 ? d.weight : 0 })
+  }
+  if (!vals.length) return null
+  let wsum = vals.reduce((a, x) => a + x.w, 0)
+  if (wsum <= 0) wsum = vals.length
+  return Math.round((vals.reduce((a, x) => a + x.v * (x.w / wsum), 0)) * 100) / 100
+}
+
+function dvgOf(p: Part, pn: string): number | null {
+  const s = p.scores[pn]
+  const ref = refOf(p, pn)
+  if (typeof s !== 'number' || ref == null) return null
+  return Math.round((s - ref) * 100) / 100
+}
+
+function fmtDvg(x: number): string {
+  const v = Math.round(x * 10) / 10
+  return (v > 0 ? '+' : '') + v.toFixed(1)
+}
+
+function setPersonTags(pn: string, v: string[]) {
+  if (!part.value) return
+  part.value.personTags = part.value.personTags || {}
+  part.value.personTags[pn] = v
+}
+
+function setPersonComment(pn: string, v: string) {
+  if (!part.value) return
+  part.value.personComments = part.value.personComments || {}
+  part.value.personComments[pn] = v
+}
 function statusOf(p: Part) {
   if (p.skipped) return 'skip'
   return hasScore(p) ? 'done' : 'todo'
+}
+
+// 列表第二行：歌手 · 《作品》（类型单独做成小徽标）
+function subOf(p: Part): string {
+  const pr = p.parsed
+  if (!pr) return ''
+  return [pr.artist, pr.anime ? `《${pr.anime}》` : ''].filter(Boolean).join(' · ')
 }
 
 // ---------- 自动保存 ----------
@@ -438,6 +581,11 @@ async function refreshSilently() {
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return
   try {
     const s = await api.getSession(sessionId)
+    // await 期间用户可能已开始编辑/保存：二次校验，避免用服务器旧数据覆盖本地新输入
+    const statusNow = saveStatus.value as string
+    if (statusNow === 'saving' || statusNow === 'error') return
+    const ae2 = document.activeElement
+    if (ae2 && (ae2.tagName === 'INPUT' || ae2.tagName === 'TEXTAREA')) return
     if (s.parts.length !== session.value.parts.length) return
     ready = false
     normalize(s, cfg.value)
@@ -456,6 +604,59 @@ onMounted(() => {
     if (!document.hidden) refreshSilently()
   }, 8000)
 })
+
+// ---------- AI 锐评（DeepSeek，按需触发） ----------
+const aiDlg = ref(false)
+const aiLoading = ref(false)
+const aiText = ref('')
+const aiModel = ref('')
+const aiAt = ref('')
+const aiError = ref('')
+const aiCount = ref(0)
+
+function openAi() {
+  const reviews = session.value?.aiReviews || []
+  if (reviews.length) {
+    aiText.value = reviews[0].text
+    aiModel.value = reviews[0].model
+    aiAt.value = new Date(reviews[0].createdAt).toLocaleString('zh-CN')
+  } else {
+    aiText.value = ''
+    aiModel.value = ''
+    aiAt.value = ''
+  }
+  aiCount.value = reviews.length
+  aiError.value = ''
+  aiDlg.value = true
+}
+
+async function genAi() {
+  aiLoading.value = true
+  aiError.value = ''
+  try {
+    const r = await api.aiReview(sessionId)
+    aiText.value = r.review.text
+    aiModel.value = r.review.model
+    aiAt.value = new Date(r.review.createdAt).toLocaleString('zh-CN')
+    aiCount.value = r.total
+    if (session.value) {
+      session.value.aiReviews = [r.review, ...(session.value.aiReviews || [])].slice(0, 5)
+    }
+  } catch (e) {
+    aiError.value = (e as Error).message
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+async function copyAi() {
+  try {
+    await navigator.clipboard.writeText(aiText.value)
+    ElMessage.success('已复制锐评全文')
+  } catch {
+    ElMessage.error('复制失败，请手动选择文本')
+  }
+}
 
 // ---------- 其他 ----------
 function openBili() {
@@ -546,13 +747,41 @@ function fmtDur(sec: number) {
   width: 26px;
   text-align: right;
   flex-shrink: 0;
+  line-height: 19px;
+}
+.pinfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .ptitle {
-  flex: 1;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.psub {
+  color: #9499a0;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 15px;
+}
+.pk {
+  font-style: normal;
+  color: #fb7299;
+  background: #fff0f4;
+  border: 1px solid #ffe3ec;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-right: 5px;
+  font-size: 10.5px;
+  line-height: 14px;
+  display: inline-block;
+  vertical-align: 1px;
 }
 .pitem.done .ptitle { color: #61666d; }
 .pitem.skip { opacity: 0.45; }
@@ -607,6 +836,18 @@ function fmtDur(sec: number) {
 }
 .pname { font-weight: 600; white-space: nowrap; }
 .range { color: #c9ccd0; font-size: 12px; }
+.wt { color: #c9ccd0; font-size: 11px; margin-left: 3px; }
+.totwrap { display: flex; align-items: center; }
+.dvg {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.dvg.pos { color: #c24545; background: #fdeeee; }
+.dvg.neg { color: #2a6fb8; background: #eaf3fc; }
 .sin {
   width: 76px;
   height: 34px;
@@ -635,6 +876,28 @@ function fmtDur(sec: number) {
 
 .extra { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 
+.annot { margin-top: 4px; border-top: none; }
+.annot :deep(.el-collapse-item__header) { height: 40px; }
+.annot-title { font-weight: 600; font-size: 14px; }
+.annot-sub { color: #9499a0; font-size: 12px; margin-left: 10px; }
+.annot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 0;
+}
+.annot-name {
+  width: 130px;
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.annot-score { color: #fb7299; margin-left: 4px; }
+.annot-tags { width: 300px; }
+.annot-cmt { flex: 1; min-width: 180px; }
+
 .navrow {
   display: flex;
   align-items: center;
@@ -642,4 +905,38 @@ function fmtDur(sec: number) {
   margin-top: 18px;
 }
 .pos { color: #9499a0; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #9499a0;
+  font-size: 13.5px;
+  padding: 26px 0;
+}
+.ai-spinner {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 3px solid #ffe3ec;
+  border-top-color: #fb7299;
+  animation: ai-spin 0.9s linear infinite;
+}
+@keyframes ai-spin {
+  to { transform: rotate(360deg); }
+}
+.ai-text {
+  white-space: pre-wrap;
+  line-height: 1.85;
+  font-size: 14px;
+  color: #30333a;
+  max-height: 56vh;
+  overflow-y: auto;
+}
+.ai-meta {
+  margin-top: 10px;
+  color: #9499a0;
+  font-size: 12px;
+}
 </style>

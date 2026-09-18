@@ -1,4 +1,4 @@
-import type { Config, Session, SessionMeta } from './types'
+import type { AiConfigInfo, AiReview, Config, Session, SessionMeta } from './types'
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch('/api' + url, {
@@ -32,22 +32,47 @@ export const api = {
   allReport: (fmt: 'html' | 'md' | 'xlsx' | 'json', inline = false) =>
     `/api/reports/all/${fmt}${inline ? '?inline=1' : ''}`,
 
-  /** 单曲级合并写入：只动一个人的总分/收藏，避免整份覆盖 */
+  /** 单曲级合并写入：只动一个人的总分/收藏/个人标签，避免整份覆盖 */
   patchPart: (
     id: string,
     page: number,
-    body: { person: string; score?: number | null; fav?: boolean }
+    body: {
+      person: string
+      score?: number | null
+      fav?: boolean
+      personTags?: string[]
+      personComment?: string | null
+    }
   ) =>
-    req<{ page: number; scores: Record<string, number>; favorites: string[] }>(
+    req<{
+      page: number
+      scores: Record<string, number>
+      favorites: string[]
+      personTags: Record<string, string[]>
+      personComments: Record<string, string>
+    }>(
       `/sessions/${id}/part/${page}`,
       { method: 'PUT', body: JSON.stringify(body) }
     ),
   sheetUrl: (id: string) => `/api/sessions/${id}/sheet`,
   importSheets: (id: string, sheets: unknown[]) =>
-    req<{ addedPersons: string[]; scores: number; favorites: number }>(
+    req<{ addedPersons: string[]; scores: number; favorites: number; tags: number }>(
       `/sessions/${id}/import`,
       { method: 'POST', body: JSON.stringify(sheets) }
-    )
+    ),
+
+  // ---------- AI 锐评（DeepSeek） ----------
+  getAiConfig: () => req<AiConfigInfo>('/ai/config'),
+  saveAiConfig: (body: {
+    baseUrl?: string
+    model?: string
+    apiKey?: string
+    clearKey?: boolean
+    anonymize?: boolean
+  }) => req<AiConfigInfo>('/ai/config', { method: 'PUT', body: JSON.stringify(body) }),
+  testAi: () => req<{ ok: boolean; reply: string }>('/ai/test', { method: 'POST' }),
+  aiReview: (id: string) =>
+    req<{ review: AiReview; total: number }>(`/sessions/${id}/ai-review`, { method: 'POST' })
 }
 
 export function download(url: string) {

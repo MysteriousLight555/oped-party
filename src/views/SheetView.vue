@@ -30,7 +30,8 @@
           <el-input v-model="filterText" placeholder="搜索曲名 / 歌手 / 番剧" clearable />
         </div>
         <p class="s-tip">
-          点分数即选中，再点一下取消；★ 收藏。分数实时保存，中途关页面也没关系。
+          点分数即选中，再点一下取消；★ 收藏；下方标签是<b>你自己的</b>情绪判断（工业糖精 / 情怀暴击
+          …），用来解释你的反差分。分数实时保存，中途关页面也没关系。
         </p>
       </div>
 
@@ -72,6 +73,17 @@
               @click="tapFav(p)"
             >
               ★
+            </button>
+          </div>
+          <div v-if="me" class="s-tags">
+            <button
+              v-for="t in tagOptions(p)"
+              :key="t"
+              class="s-tag"
+              :class="{ on: p.personTags?.[me]?.includes(t) }"
+              @click="toggleTag(p, t)"
+            >
+              {{ t }}
             </button>
           </div>
         </div>
@@ -128,6 +140,10 @@ const filteredParts = computed(() => {
 
 onMounted(async () => {
   const [s, c] = await Promise.all([api.getSession(sessionId), api.getConfig()])
+  for (const p of s.parts) {
+    p.personTags = p.personTags || {}
+    p.personComments = p.personComments || {}
+  }
   session.value = s
   cfg.value = c
   personSel.value = localStorage.getItem(`sheet-person-${sessionId}`) || ''
@@ -163,6 +179,28 @@ async function tapFav(p: Part) {
   else p.favorites.splice(p.favorites.indexOf(me.value), 1)
   try {
     await api.patchPart(sessionId, p.page, { person: me.value, fav: on })
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+// ---------- 个人标签：解释"为什么我给这个分"（工业糖精 / 情怀暴击…） ----------
+function tagOptions(p: Part): string[] {
+  const set = new Set([...(cfg.value?.tags || []), ...(p.personTags?.[me.value] ?? [])])
+  return [...set]
+}
+
+async function toggleTag(p: Part, t: string) {
+  if (!(await guard())) return
+  const cur = new Set(p.personTags?.[me.value] ?? [])
+  const on = !cur.has(t)
+  if (on) cur.add(t)
+  else cur.delete(t)
+  const arr = [...cur]
+  p.personTags = p.personTags || {}
+  p.personTags[me.value] = arr
+  try {
+    await api.patchPart(sessionId, p.page, { person: me.value, personTags: arr })
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
@@ -284,5 +322,30 @@ async function tapFav(p: Part) {
 }
 .s-fav.on {
   color: #f7a35c;
+}
+.s-tags {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.s-tag {
+  border: 1px solid #e3e5e9;
+  background: #fff;
+  color: #61666d;
+  border-radius: 20px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.s-tag:hover {
+  border-color: #fb7299;
+  color: #fb7299;
+}
+.s-tag.on {
+  background: #fff0f4;
+  border-color: #ffd6e2;
+  color: #fb7299;
+  font-weight: 600;
 }
 </style>

@@ -285,6 +285,7 @@ async function onImportFiles(e: Event) {
     const r = await api.importSheets(importTarget, sheets)
     ElMessage.success(
       `导入成功：${r.scores} 个分数、${r.favorites} 个收藏` +
+        (r.tags ? `、${r.tags} 个标签` : '') +
         (r.addedPersons.length ? `；新成员 ${r.addedPersons.join('、')} 已自动加入配置` : '')
     )
     config.value = await api.getConfig()
