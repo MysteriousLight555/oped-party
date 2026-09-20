@@ -152,6 +152,36 @@
       </p>
     </el-card>
 
+    <el-card shadow="never" class="mb16">
+      <template #header><b>网易云音乐</b>（搜索匹配歌曲、试听直链；凭证只存本机）</template>
+      <div class="ncm-row">
+        <span>凭证：</span>
+        <el-tag v-if="ncm?.configured" type="success" effect="plain">已配置</el-tag>
+        <el-tag v-else type="danger" effect="plain">缺 appId/privateKey（data/ncm-auth.json）</el-tag>
+        <el-tag v-if="ncm?.loggedIn" type="success" effect="plain" class="ncm-tag">
+          已登录 · 剩余约 {{ ncm.tokenRemainingHours }} 小时
+        </el-tag>
+        <el-tag v-else type="warning" effect="plain" class="ncm-tag">未登录 / 已过期</el-tag>
+      </div>
+      <div v-if="ncmLogin.qrUrl" class="ncm-row">
+        <span>
+          用网易云 App 扫码或手机打开：
+          <a :href="ncmLogin.qrUrl" target="_blank">{{ ncmLogin.qrUrl }}</a>
+          <span v-if="ncmLogin.status === 802">（已扫码，等待确认…）</span>
+          <span v-else-if="ncmLogin.status === 801">（等待扫码…）</span>
+        </span>
+      </div>
+      <div class="ncm-row">
+        <el-button size="small" :loading="ncmLogin.polling" @click="ncmStartLogin">
+          {{ ncm?.loggedIn ? '重新扫码登录' : '扫码登录' }}
+        </el-button>
+        <span class="hint" style="margin: 0 0 0 10px">
+          token 有效期 24 小时；过期后工作台匹配会提示回来重扫。本机播放（▶）还需安装 mpv 并
+          npx @music163/ncm-cli login。
+        </span>
+      </div>
+    </el-card>
+
     <el-card shadow="never">
       <template #header><b>分数范围</b></template>
       <div class="rangerow">
@@ -255,6 +285,52 @@ const aiTestOk = ref(false)
 onMounted(async () => {
   ai.value = await api.getAiConfig()
 })
+
+// ---------- 网易云音乐 ----------
+const ncm = ref<Awaited<ReturnType<typeof api.ncmStatus>> | null>(null)
+const ncmLogin = ref<{ qrUrl: string; uniKey: string; status: number; polling: boolean }>({
+  qrUrl: '',
+  uniKey: '',
+  status: 0,
+  polling: false
+})
+
+onMounted(async () => {
+  try {
+    ncm.value = await api.ncmStatus()
+  } catch {
+    /* ignore */
+  }
+})
+
+async function ncmStartLogin() {
+  try {
+    const qr = await api.ncmLoginQr()
+    ncmLogin.value = { qrUrl: qr.qrUrl, uniKey: qr.uniKey, status: 801, polling: true }
+    for (let i = 0; i < 100; i++) {
+      await new Promise(r => setTimeout(r, 3000))
+      const st = await api.ncmLoginPoll(qr.uniKey)
+      ncmLogin.value.status = st.status
+      if (st.status === 803) {
+        ncm.value = await api.ncmStatus()
+        ElMessage.success('网易云登录成功')
+        ncmLogin.value.polling = false
+        ncmLogin.value.qrUrl = ''
+        return
+      }
+      if (st.status === 800) {
+        ElMessage.warning('二维码已过期，请重新生成')
+        ncmLogin.value.polling = false
+        return
+      }
+    }
+    ncmLogin.value.polling = false
+    ElMessage.warning('轮询超时，请重试')
+  } catch (e) {
+    ncmLogin.value.polling = false
+    ElMessage.error((e as Error).message)
+  }
+}
 
 async function saveAi() {
   aiSaving.value = true
@@ -379,4 +455,14 @@ async function save() {
 }
 .ai-test.ok { color: #67c23a; }
 .ai-test.bad { color: #f56c6c; }
+.ncm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.ncm-tag {
+  margin-left: 4px;
+}
 </style>

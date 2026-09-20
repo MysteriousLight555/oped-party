@@ -30,10 +30,16 @@ export interface Part {
 }
 
 export interface NcmSong {
+  /** 明文数字 ID（网易云网页链接用） */
   id: string
+  /** 32 位加密 ID（CLI 播放用） */
   encryptedId?: string
   name: string
   artist?: string
+  album?: string
+  cover?: string
+  payPlayFlag?: boolean
+  vipFlag?: boolean
   keyword?: string
   matchedAt?: string
 }

@@ -75,9 +75,16 @@ export const api = {
     req<{ review: AiReview; total: number }>(`/sessions/${id}/ai-review`, { method: 'POST' }),
 
   ncmStatus: () =>
-    req<{ installed: boolean; appId: boolean; privateKey: boolean; player: string; mpv: boolean }>(
-      '/ncm/status'
-    ),
+    req<{
+      configured: boolean
+      loggedIn: boolean
+      expireAt: number | null
+      tokenRemainingHours: number
+      mpv: boolean
+    }>('/ncm/status'),
+  ncmLoginQr: () => req<{ uniKey: string; qrUrl: string }>('/ncm/login/qr'),
+  ncmLoginPoll: (uniKey: string) =>
+    req<{ status: number; msg?: string; saved?: boolean }>(`/ncm/login/qr/${encodeURIComponent(uniKey)}`),
   ncmMatch: (sessionId: string, page: number) =>
     req<NcmSong>('/ncm/match', {
       method: 'POST',

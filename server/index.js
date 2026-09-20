@@ -20,7 +20,7 @@ import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
 import { renderSheetHtml } from './sheet.js'
 import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection } from './ai.js'
-import { ncmStatus, searchSong, playSong, searchKeyword } from './ncm.js'
+import { ncmStatus, matchPart, playSong, qrCreate, qrPoll, loadAuth, searchKeyword } from './ncm.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // 端口避开常见服务（4310 是 OpenTelemetry 默认端口，本机可能有采集端点占用 IPv6 侧）
@@ -372,9 +372,20 @@ app.post('/api/sessions/:id/ai-review', async (req, res) => {
   }
 })
 
-// ---------- 网易云音乐（官方 CLI 集成） ----------
+// ---------- 网易云音乐（开放平台直连） ----------
 app.get('/api/ncm/status', async (req, res) => {
   ok(res).json(await ncmStatus())
+})
+
+// 扫码登录：创建二维码 / 轮询状态
+app.get('/api/ncm/login/qr', async (req, res) => {
+  const r = await qrCreate()
+  if (r.error) return res.status(400).json(r)
+  ok(res).json(r)
+})
+
+app.get('/api/ncm/login/qr/:uniKey', async (req, res) => {
+  ok(res).json(await qrPoll(req.params.uniKey))
 })
 
 // 匹配某一分P到网易云曲库，结果缓存进 part.ncm
@@ -385,32 +396,44 @@ app.post('/api/ncm/match', async (req, res) => {
   const part = s.parts.find(p => p.page === Number(page))
   if (!part) return res.status(404).json({ error: '分P不存在' })
 
-  const { keyword } = searchKeyword(part.parsed)
-  if (!keyword) return res.status(400).json({ error: '这一分P没有可用的搜索关键词' })
-  const r = await searchSong(keyword)
-  if (!r.ok) {
-    return res.status(502).json({ error: `网易云匹配失败：${r.error}`, keyword, raw: r.raw })
+  const auth = loadAuth()
+  if (!auth.appId || !auth.privateKey) {
+    return res.status(400).json({ error: '网易云未配置：缺少 appId/privateKey（data/ncm-auth.json）' })
   }
+  if (!loadAuth().userToken) {
+    return res.status(400).json({ error: '网易云未登录：请先完成扫码登录（设置页或 /api/ncm/login/qr）' })
+  }
+
+  const r = await matchPart(auth, part)
+  if (!r.ok) {
+    const code = r.needLogin ? 401 : 502
+    return res.status(code).json({ error: `网易云匹配失败：${r.error}`, keyword: r.keyword })
+  }
+  const song = r.song
   part.ncm = {
-    id: r.song.id || '',
-    encryptedId: r.song.encryptedId || '',
-    name: r.song.name || '',
-    artist: r.song.artist || '',
-    keyword,
+    id: song.id,
+    encryptedId: song.encryptedId,
+    name: song.name,
+    artist: song.artist,
+    album: song.album,
+    cover: song.cover,
+    payPlayFlag: song.payPlayFlag,
+    vipFlag: song.vipFlag,
+    keyword: r.keyword,
     matchedAt: new Date().toISOString()
   }
   saveSession(s)
   ok(res).json(part.ncm)
 })
 
-// 用 CLI 在本机播放（需私钥+mpv）
+// 用 CLI 在本机播放（需 CLI 自己的登录态 + mpv）
 app.post('/api/ncm/play', async (req, res) => {
   const { sessionId, page } = req.body || {}
   const s = getSession(sessionId)
   if (!s) return res.status(404).json({ error: '期次不存在' })
   const part = s.parts.find(p => p.page === Number(page))
   if (!part?.ncm) return res.status(400).json({ error: '这一分P还没匹配网易云歌曲' })
-  const r = await playSong(part.ncm)
+  const r = await playSong(part)
   if (!r.ok) return res.status(502).json({ error: `播放失败：${r.error}` })
   ok(res).json({ started: true })
 })

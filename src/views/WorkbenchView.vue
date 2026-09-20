@@ -119,13 +119,13 @@
               >试听 ↗</el-button
             >
             <el-button
-              v-if="part.ncm?.id && ncmStatus?.player"
+              v-if="part.ncm?.id && ncmStatus?.mpv"
               size="small"
               type="success"
               plain
               :loading="ncmPlaying"
               @click="ncmPlay"
-              title="用本机播放器（mpv）播放这首歌"
+              title="用本机播放器（mpv，需 ncm-cli 登录）播放这首歌"
               >▶ 本机</el-button
             >
             <el-button size="small" @click="toggleSkip">
@@ -703,7 +703,9 @@ function openBili() {
 }
 
 // ---------- 网易云音乐 ----------
-const ncmStatus = ref<{ player: string; privateKey: boolean } | null>(null)
+const ncmStatus = ref<{ configured: boolean; loggedIn: boolean; tokenRemainingHours: number; mpv: boolean } | null>(
+  null
+)
 const ncmMatching = ref(false)
 const ncmPlaying = ref(false)
 const ncmBatching = ref(false)
@@ -720,17 +722,19 @@ onMounted(async () => {
 })
 
 async function ncmGuardReady(): Promise<boolean> {
-  if (!ncmStatus.value?.privateKey) {
+  if (!ncmStatus.value?.loggedIn || !ncmStatus.value?.configured) {
     try {
       ncmStatus.value = await api.ncmStatus()
     } catch {
       /* ignore */
     }
   }
-  if (!ncmStatus.value?.privateKey) {
-    ElMessage.warning(
-      '网易云未配置私钥：先在项目目录运行 npx @music163/ncm-cli config set privateKey <私钥内容>'
-    )
+  if (!ncmStatus.value?.configured) {
+    ElMessage.warning('网易云未配置凭证（data/ncm-auth.json 缺 appId/privateKey）')
+    return false
+  }
+  if (!ncmStatus.value?.loggedIn) {
+    ElMessage.warning('网易云登录已过期：去设置页重新扫码（二维码链接发手机打开即可）')
     return false
   }
   return true
