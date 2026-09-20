@@ -420,6 +420,14 @@
           <span class="ph-meta">{{ part.parsed.artist }} · 《{{ part.parsed.anime || '？' }}》</span>
         </div>
         <div class="ph-rows">
+          <div v-if="dims.length" class="ph-row ph-head">
+            <span class="ph-name"></span>
+            <span class="ph-col strong">总分</span>
+            <span v-for="d in dims" :key="d.key" class="ph-col" :title="d.desc || d.name">
+              {{ d.name }}
+            </span>
+            <span class="ph-favslot">★</span>
+          </div>
           <div v-for="pn in cfg.persons" :key="pn" class="ph-row">
             <span class="ph-name">{{ pn }}</span>
             <input
@@ -431,6 +439,19 @@
               @blur="pipClamp(pn)"
               @keydown.enter.prevent="pipEnter($event)"
             />
+            <template v-if="dims.length">
+              <input
+                v-for="d in dims"
+                :key="d.key"
+                class="ph-in dim"
+                :value="part.dimScores?.[d.key]?.[pn] ?? ''"
+                placeholder="—"
+                inputmode="numeric"
+                @input="onPipDimInput($event, pn, d.key)"
+                @blur="pipClampDim(pn, d.key)"
+                @keydown.enter.prevent="pipEnter($event)"
+              />
+            </template>
             <button
               class="ph-fav"
               :class="{ on: part.favorites.includes(pn) }"
@@ -446,7 +467,9 @@
           <button class="ph-btn primary" @click="next">下一首 →</button>
           <span class="ph-pos">{{ votedCount }}/{{ totalActive }}</span>
         </div>
-        <p class="ph-hint">回车跳下一人 · 置顶窗直接打，电脑这边自动同步</p>
+        <p class="ph-hint">
+          回车跳下一格（总分→维度→下一人）· 维度是参考坐标，可留空 · 打分即时同步
+        </p>
       </div>
     </div>
   </div>
@@ -806,6 +829,32 @@ function onPipInput(e: Event, pn: string) {
   onCellInput(e, part.value.scores, pn)
 }
 
+function onPipDimInput(e: Event, pn: string, dimKey: string) {
+  if (!part.value) return
+  const ds = (part.value.dimScores = part.value.dimScores || {})
+  const map = (ds[dimKey] = ds[dimKey] || {})
+  const raw = (e.target as HTMLInputElement).value.trim()
+  if (raw === '') {
+    delete map[pn]
+    return
+  }
+  const n = Number(raw)
+  if (!Number.isNaN(n)) map[pn] = n
+}
+
+function pipClampDim(pn: string, dimKey: string) {
+  if (!part.value) return
+  const map = part.value.dimScores[dimKey] || {}
+  const v = map[pn]
+  if (typeof v !== 'number' || Number.isNaN(v)) {
+    delete map[pn]
+    return
+  }
+  const min = cfg.value?.scoreMin ?? 1
+  const max = cfg.value?.scoreMax ?? 10
+  map[pn] = Math.min(max, Math.max(min, Math.round(v)))
+}
+
 function pipClamp(pn: string) {
   if (part.value) clampCell(part.value.scores, pn)
 }
@@ -870,7 +919,7 @@ async function openPip() {
     return
   }
   try {
-    const w = await dpip.requestWindow({ width: 400, height: 360 })
+    const w = await dpip.requestWindow({ width: 440, height: 420 })
     copyStylesTo(w)
     const host = pipHostRef.value
     if (host) {
@@ -901,6 +950,10 @@ async function refreshSilently() {
   if (saveStatus.value === 'saving') return
   const ae = document.activeElement
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return
+  // 悬浮窗里正在输入时也别刷（焦点在 PiP 文档里，主文档 activeElement 看不到）
+  const pipDoc = pipWin && !pipWin.closed ? pipWin.document : null
+  const pae = pipDoc?.activeElement
+  if (pae && (pae.tagName === 'INPUT' || pae.tagName === 'TEXTAREA')) return
   try {
     const s = await api.getSession(sessionId)
     // await 期间用户可能已开始编辑/保存：二次校验，避免用服务器旧数据覆盖本地新输入
@@ -1616,7 +1669,7 @@ function fmtDur(sec: number) {
 /* ---------- 悬浮面板搬运节点（PiP） ---------- */
 .pip-host { display: none; }
 .pip-host.in-pip { display: block; }
-.ph-wrap { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.ph-wrap { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
 .ph-song { line-height: 1.5; }
 .ph-kind {
   font-size: 11px;
@@ -1627,40 +1680,70 @@ function fmtDur(sec: number) {
   margin-right: 5px;
   vertical-align: 1px;
 }
-.ph-title { font-size: 17px; font-weight: 700; word-break: break-all; }
-.ph-meta { display: block; color: #8a919e; font-size: 12.5px; margin-top: 2px; }
-.ph-rows { display: flex; flex-direction: column; gap: 7px; }
-.ph-row { display: flex; align-items: center; gap: 9px; }
-.ph-name { width: 86px; flex-shrink: 0; font-size: 14.5px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ph-title { font-size: 16px; font-weight: 700; word-break: break-all; }
+.ph-meta { display: block; color: #8a919e; font-size: 12px; margin-top: 2px; }
+.ph-rows { display: flex; flex-direction: column; gap: 6px; }
+.ph-row { display: flex; align-items: center; gap: 5px; }
+.ph-row.ph-head { margin-bottom: -2px; }
+.ph-name {
+  width: 72px;
+  flex-shrink: 0;
+  font-size: 13.5px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ph-col {
+  width: 50px;
+  flex-shrink: 0;
+  text-align: center;
+  color: #8a919e;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ph-col.strong { color: #fb7299; font-weight: 600; }
+.ph-favslot { width: 26px; text-align: center; color: #4a5264; font-size: 12px; flex-shrink: 0; }
 .ph-in {
-  flex: 1;
-  min-width: 0;
-  height: 36px;
+  width: 50px;
+  flex-shrink: 0;
+  height: 33px;
   border: 1px solid #3a4152;
-  border-radius: 9px;
+  border-radius: 8px;
   background: #1d212b;
   color: #f2f3f5;
-  font-size: 17px;
+  font-size: 15px;
   text-align: center;
   outline: none;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.ph-in::-webkit-outer-spin-button,
+.ph-in::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 .ph-in:focus { border-color: #fb7299; }
-.ph-fav { border: none; background: none; font-size: 22px; color: #4a5264; cursor: pointer; padding: 0 4px; }
+.ph-in.dim { color: #b9c1cf; border-color: #2e3442; }
+.ph-in.dim:focus { border-color: #5a81b4; }
+.ph-fav { border: none; background: none; font-size: 20px; color: #4a5264; cursor: pointer; padding: 0 3px; flex-shrink: 0; }
 .ph-fav.on { color: #ffa940; }
 .ph-foot { display: flex; align-items: center; gap: 9px; margin-top: 2px; }
 .ph-btn {
-  height: 34px;
-  padding: 0 14px;
-  border-radius: 9px;
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 8px;
   border: 1px solid #3a4152;
   background: #1d212b;
   color: #cfd4de;
-  font-size: 13.5px;
+  font-size: 13px;
   cursor: pointer;
 }
 .ph-btn.primary { background: #fb7299; border-color: #fb7299; color: #fff; font-weight: 600; }
 .ph-pos { margin-left: auto; color: #8a919e; font-size: 13px; font-variant-numeric: tabular-nums; }
-.ph-hint { margin: 0; color: #5a6275; font-size: 11.5px; }
+.ph-hint { margin: 0; color: #5a6275; font-size: 11px; line-height: 1.5; }
 
 .extra { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 
