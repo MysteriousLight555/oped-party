@@ -75,6 +75,45 @@
               ★
             </button>
           </div>
+          <button
+            v-if="dims.length"
+            class="s-dimtoggle"
+            :class="{ open: dimOpen[p.page] }"
+            @click="dimOpen[p.page] = !dimOpen[p.page]"
+          >
+            <span>维度 <b>{{ dimFilled(p) }}</b>/{{ dims.length }}</span>
+            <span
+              v-if="dvgOf(p) != null"
+              class="s-dvg"
+              :class="(dvgOf(p) as number) >= 0 ? 'pos' : 'neg'"
+            >Δ{{ fmtDvg(dvgOf(p) as number) }}</span>
+            <span class="chev">▾</span>
+          </button>
+          <div v-if="dims.length && dimOpen[p.page]" class="s-dimpanel">
+            <div v-for="d in dims" :key="d.key" class="s-dimrow">
+              <span class="s-dimname" :title="d.desc">{{ d.name }}</span>
+              <template v-if="useButtons">
+                <button
+                  v-for="v in scoreRange"
+                  :key="v"
+                  class="s-btn mini"
+                  :class="{ on: p.dimScores?.[d.key]?.[me] === v }"
+                  @click="tapDim(p, d.key, v)"
+                >
+                  {{ v }}
+                </button>
+              </template>
+              <el-input-number
+                v-else
+                :model-value="(p.dimScores?.[d.key]?.[me] as number) ?? undefined"
+                :min="cfg.scoreMin"
+                :max="cfg.scoreMax"
+                size="small"
+                @change="(v: number | undefined) => setDim(p, d.key, v ?? null)"
+              />
+            </div>
+            <p class="s-dimhint">维度分是参考坐标（算 Δ 反差用），不给也完全不影响你的总分。</p>
+          </div>
           <div v-if="me" class="s-tags">
             <button
               v-for="t in tagOptions(p)"
@@ -112,6 +151,57 @@ const filterText = ref('')
 const me = computed(() =>
   personSel.value === '__custom__' ? personCustom.value.trim() : personSel.value
 )
+const dims = computed(() => (cfg.value?.dimensions || []).filter(d => d.enabled))
+const dimOpen = ref<Record<number, boolean>>({})
+
+function dimFilled(p: Part): number {
+  return dims.value.filter(d => typeof p.dimScores?.[d.key]?.[me.value] === 'number').length
+}
+
+/** 维度参考分（按权重归一），用于 Δ 反差小徽标 */
+function refOf(p: Part): number | null {
+  const vals: { v: number; w: number }[] = []
+  for (const d of dims.value) {
+    const v = p.dimScores?.[d.key]?.[me.value]
+    if (typeof v === 'number') vals.push({ v, w: d.weight && d.weight > 0 ? d.weight : 0 })
+  }
+  if (!vals.length) return null
+  let wsum = vals.reduce((a, x) => a + x.w, 0)
+  if (wsum <= 0) wsum = vals.length
+  return Math.round(vals.reduce((a, x) => a + x.v * (x.w / wsum), 0) * 100) / 100
+}
+
+function dvgOf(p: Part): number | null {
+  const s = p.scores[me.value]
+  const ref = refOf(p)
+  if (typeof s !== 'number' || ref == null) return null
+  return Math.round((s - ref) * 100) / 100
+}
+
+function fmtDvg(x: number): string {
+  const v = Math.round(x * 10) / 10
+  return (v > 0 ? '+' : '') + v.toFixed(1)
+}
+
+function tapDim(p: Part, key: string, v: number) {
+  setDim(p, key, p.dimScores?.[key]?.[me.value] === v ? null : v)
+}
+
+async function setDim(p: Part, key: string, v: number | null) {
+  if (!(await guard())) return
+  p.dimScores = p.dimScores || {}
+  p.dimScores[key] = p.dimScores[key] || {}
+  const prev = p.dimScores[key][me.value]
+  if (v === null) delete p.dimScores[key][me.value]
+  else p.dimScores[key][me.value] = v
+  try {
+    await api.patchPart(sessionId, p.page, { person: me.value, dim: key, score: v })
+  } catch (e) {
+    if (prev === undefined) delete p.dimScores[key][me.value]
+    else p.dimScores[key][me.value] = prev
+    ElMessage.error((e as Error).message)
+  }
+}
 const parts = computed(() => (session.value?.parts || []).filter(p => !p.skipped))
 const useButtons = computed(() => {
   const c = cfg.value
@@ -143,6 +233,7 @@ onMounted(async () => {
   for (const p of s.parts) {
     p.personTags = p.personTags || {}
     p.personComments = p.personComments || {}
+    p.dimScores = p.dimScores || {}
   }
   session.value = s
   cfg.value = c
@@ -157,6 +248,12 @@ onMounted(async () => {
       personCustom.value = saved
       personSel.value = '__custom__'
     }
+  }
+  // 打过维度分的歌自动展开，其余收起不碍眼
+  for (const p of s.parts) {
+    dimOpen.value[p.page] = dims.value.some(
+      d => typeof p.dimScores?.[d.key]?.[me.value] === 'number'
+    )
   }
 })
 
@@ -347,6 +444,89 @@ async function toggleTag(p: Part, t: string) {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+.s-dimtoggle {
+  margin-top: 8px;
+  border: none;
+  background: none;
+  color: #9499a0;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.s-dimtoggle b {
+  color: #fb7299;
+}
+.s-dimtoggle .chev {
+  display: inline-block;
+  transition: transform 0.18s;
+  font-size: 10px;
+}
+.s-dimtoggle.open .chev {
+  transform: rotate(180deg);
+}
+.s-dvg {
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.s-dvg.pos {
+  color: #c24545;
+  background: #fdeeee;
+}
+.s-dvg.neg {
+  color: #2a6fb8;
+  background: #eaf3fc;
+}
+.s-dimpanel {
+  margin-top: 8px;
+  border-top: 1px dashed #eceef1;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: dim-in 0.18s ease;
+}
+@keyframes dim-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.s-dimrow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.s-dimname {
+  color: #61666d;
+  font-size: 12.5px;
+  width: 64px;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.s-btn.mini {
+  min-width: 28px;
+  height: 26px;
+  font-size: 12.5px;
+  border-radius: 13px;
+}
+.s-dimhint {
+  margin: 2px 0 0;
+  color: #b8bec6;
+  font-size: 11.5px;
 }
 .s-tag {
   border: 1px solid #e3e5e9;

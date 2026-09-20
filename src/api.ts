@@ -40,13 +40,15 @@ export const api = {
   allReport: (fmt: 'html' | 'md' | 'xlsx' | 'json', inline = false) =>
     `/api/reports/all/${fmt}${inline ? '?inline=1' : ''}`,
 
-  /** 单曲级合并写入：只动一个人的总分/收藏/个人标签，避免整份覆盖 */
+  /** 单曲级合并写入：只动一个人的总分/维度分/收藏/个人标签，避免整份覆盖 */
   patchPart: (
     id: string,
     page: number,
     body: {
       person: string
       score?: number | null
+      /** 维度分模式：带 dim 时 score 是该维度的分 */
+      dim?: string
       fav?: boolean
       personTags?: string[]
       personComment?: string | null

@@ -234,9 +234,24 @@ app.put('/api/sessions/:id/part/:page', (req, res) => {
   if (!s) return res.status(404).json({ error: '期次不存在' })
   const part = s.parts.find(p => p.page === Number(req.params.page))
   if (!part) return res.status(404).json({ error: '分P不存在' })
-  const { person, score, fav, personTags, personComment } = req.body || {}
+  const { person, score, fav, personTags, personComment, dim } = req.body || {}
   if (!person || typeof person !== 'string') {
     return res.status(400).json({ error: '缺少 person' })
+  }
+  if (dim !== undefined) {
+    // 维度分（手机打分页用）：{ person, dim: 维度key, score }，score null = 清除
+    const dimKey = String(dim)
+    part.dimScores = part.dimScores || {}
+    part.dimScores[dimKey] = part.dimScores[dimKey] || {}
+    if (score === null || score === '') {
+      delete part.dimScores[dimKey][person]
+    } else {
+      const n = Number(score)
+      if (Number.isNaN(n)) return res.status(400).json({ error: '维度分不是数字' })
+      part.dimScores[dimKey][person] = n
+    }
+    saveSession(s)
+    return ok(res).json({ page: part.page, dimScores: part.dimScores })
   }
   if (score !== undefined) {
     if (score === null || score === '') {
