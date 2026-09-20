@@ -183,7 +183,9 @@ onMounted(async () => {
 })
 
 function go(id: string) {
-  router.push(`/session/${id}/work`)
+  // 手机（<768px）进个人打分页，电脑进工作台
+  const mobile = window.matchMedia('(max-width: 768px)').matches
+  router.push(`/session/${id}/${mobile ? 'sheet' : 'work'}`)
 }
 
 function preview(url: string) {

@@ -173,9 +173,15 @@ async function guard(): Promise<boolean> {
 
 async function setScore(p: Part, v: number | null) {
   if (!(await guard())) return
+  // 乐观更新：按钮立刻亮/灭，保存失败再回滚（否则手机上"点了没反应"）
+  const prev = p.scores[me.value]
+  if (v === null) delete p.scores[me.value]
+  else p.scores[me.value] = v
   try {
     await api.patchPart(sessionId, p.page, { person: me.value, score: v })
   } catch (e) {
+    if (prev === undefined) delete p.scores[me.value]
+    else p.scores[me.value] = prev
     ElMessage.error((e as Error).message)
   }
 }

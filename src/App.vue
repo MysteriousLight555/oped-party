@@ -45,4 +45,16 @@ import { RouterLink, RouterView } from 'vue-router'
   border-bottom: 2px solid #fff;
   padding-bottom: 2px;
 }
+/* 手机（打分同学）不看后台导航：期次/设置是房主工具 */
+@media (max-width: 768px) {
+  .nav {
+    display: none;
+  }
+  .brand {
+    font-size: 16px;
+  }
+  .bar-inner {
+    padding: 10px 14px;
+  }
+}
 </style>
