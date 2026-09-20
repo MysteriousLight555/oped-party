@@ -1,4 +1,12 @@
-import type { AiConfigInfo, AiReview, Config, NcmSong, Session, SessionMeta } from './types'
+import type {
+  AiConfigInfo,
+  AiReview,
+  Config,
+  NcmLibStatus,
+  NcmSong,
+  Session,
+  SessionMeta
+} from './types'
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch('/api' + url, {
@@ -80,6 +88,7 @@ export const api = {
       loggedIn: boolean
       expireAt: number | null
       tokenRemainingHours: number
+      canAutoRefresh: boolean
       mpv: boolean
     }>('/ncm/status'),
   ncmLoginQr: () => req<{ uniKey: string; qrUrl: string }>('/ncm/login/qr'),
@@ -112,6 +121,46 @@ export const api = {
     req<{ started: boolean }>('/ncm/play', {
       method: 'POST',
       body: JSON.stringify({ sessionId, page })
+    }),
+
+  // 远端资料库状态（哪些歌已红心/已入目标歌单）
+  ncmLibrary: (sessionId: string) => req<NcmLibStatus>(`/ncm/library/${sessionId}`),
+
+  // 歌词（查看即缓存进期次；预取供报告歌词本用）
+  ncmLyric: (sessionId: string, page: number) =>
+    req<{ text: string; trans?: string; noLyric?: boolean; cached?: boolean }>(
+      `/ncm/lyric/${sessionId}/${page}`
+    ),
+  ncmLyricPrefetchStart: (sessionId: string) =>
+    req<{ started: boolean; running: boolean; done: number; total: number }>(
+      `/ncm/lyric-prefetch/${sessionId}`,
+      { method: 'POST' }
+    ),
+  ncmLyricPrefetchStatus: (sessionId: string) =>
+    req<{ running: boolean; done: number; total: number }>(`/ncm/lyric-prefetch/${sessionId}`),
+
+  // 换版本：搜索候选 + 手动选定
+  ncmSearch: (keyword: string) =>
+    req<{ songs: NcmSong[] }>('/ncm/search', { method: 'POST', body: JSON.stringify({ keyword }) }),
+  ncmSetSong: (sessionId: string, page: number, song: Record<string, unknown>) =>
+    req<NcmSong>('/ncm/set-song', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, page, song })
+    }),
+
+  // 撤销本期同步（取消红心 / 移出目标歌单）
+  ncmUndoSync: (sessionId: string, hearts: boolean, playlist: boolean) =>
+    req<{ songs: number; unhearted: number; heartFailed: Array<{ id: string; error: string }>; removed: number }>(
+      '/ncm/undo-sync',
+      { method: 'POST', body: JSON.stringify({ sessionId, hearts, playlist }) }
+    ),
+
+  // 数据备份 / 恢复
+  backupUrl: '/api/backup',
+  restoreBackup: (bundle: unknown) =>
+    req<{ configRestored: boolean; sessionsRestored: number }>('/restore', {
+      method: 'POST',
+      body: JSON.stringify(bundle)
     })
 }
 

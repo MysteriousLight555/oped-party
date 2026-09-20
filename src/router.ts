@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('./views/PipView.vue')
     },
     {
+      path: '/session/:id/stage',
+      name: 'stage',
+      component: () => import('./views/StageView.vue')
+    },
+    {
       path: '/session/:id/sheet',
       name: 'sheet',
       component: () => import('./views/SheetView.vue')

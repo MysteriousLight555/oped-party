@@ -10,6 +10,7 @@
         </span>
       </div>
       <el-button @click="openPip" title="置顶小窗，全屏看视频时也能打分">📺 悬浮面板</el-button>
+      <el-button @click="openStage" title="大字只读屏，共享到腾讯会议让大家实时看到进度">🖥 大屏</el-button>
       <el-button
         @click="ncmBatch"
         :loading="ncmBatching"
@@ -31,6 +32,13 @@
       >
         ★ 同步到歌单
       </el-button>
+      <el-button
+        @click="ncmUndo"
+        :loading="ncmUndoing"
+        title="取消本期已同步的红心，并把本期★收藏移出目标歌单"
+      >
+        ↩ 撤销同步
+      </el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
       <el-button
         type="warning"
@@ -45,6 +53,9 @@
           <el-dropdown-menu>
             <el-dropdown-item @click="preview(api.sessionReport(session.id, 'html', true))">
               预览排行榜
+            </el-dropdown-item>
+            <el-dropdown-item divided @click="prefetchLyrics" :disabled="lyricPrefetching">
+              📄 预取歌词（报告附歌词本）
             </el-dropdown-item>
             <el-dropdown-item divided @click="download(api.sessionReport(session.id, 'html'))">
               下载 HTML
@@ -89,6 +100,8 @@
               <span v-if="statusOf(item.part) === 'done'" class="ok">✓</span>
               <span v-if="item.part.skipped" class="sk">跳</span>
               <span v-if="item.part.favorites?.length" class="star">★</span>
+              <span v-if="libOf(item.part.page)?.hearted" class="lb heart" title="已红心">❤</span>
+              <span v-if="libOf(item.part.page)?.inPlaylist" class="lb pl" title="已在目标歌单">♪</span>
             </span>
           </div>
           <div v-if="!filteredParts.length" class="pempty">没有匹配的分 P</div>
@@ -110,6 +123,8 @@
               <template v-if="liveAvg != null">
                 · 当前均分 <b class="liveavg">{{ liveAvg }}</b>
               </template>
+              <el-tag v-if="libOf(part.page)?.hearted" size="small" type="danger" effect="plain" class="libtag">已红心</el-tag>
+              <el-tag v-if="libOf(part.page)?.inPlaylist" size="small" type="success" effect="plain" class="libtag">已在歌单</el-tag>
             </div>
           </div>
           <div class="sh-actions">
@@ -142,6 +157,8 @@
               title="用本机播放器（mpv，需 ncm-cli 登录）播放这首歌"
               >▶ 本机</el-button
             >
+            <el-button v-if="part.ncm" size="small" @click="openVer" title="自动匹配可能选错版本，从候选里换一个">🔀 换版本</el-button>
+            <el-button v-if="part.ncm" size="small" @click="openLyric" title="网易云歌词（含翻译），看过即缓存，报告可附歌词本">📄 歌词</el-button>
             <el-button size="small" @click="toggleSkip">
               {{ part.skipped ? '取消跳过' : '跳过' }}
             </el-button>
@@ -151,6 +168,19 @@
         <el-alert v-if="part.skipped" type="info" :closable="false" class="mb12">
           已标记为跳过，不会出现在榜单里（比如菜单、说明类分 P）。
         </el-alert>
+
+        <div class="quickrow" v-if="cfg.persons.length">
+          <span class="qlabel">⚡ 连报</span>
+          <input
+            ref="quickRef"
+            v-model="quickText"
+            class="qin"
+            :placeholder="quickPlaceholder"
+            @keydown.enter.prevent="applyQuick"
+            @keydown.tab.prevent="focusFirst"
+          />
+          <span class="qhint">空格分隔按人员顺序：<b>9</b> 分数 · <b>9*</b> 顺带收藏 · <b>--</b> 留空 · 少填=后面的人没分；回车提交到下一首，Tab 回表格</span>
+        </div>
 
         <div class="matrix" ref="matrixRef">
           <table>
@@ -327,6 +357,60 @@
         <el-button type="primary" @click="saveEdit">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="verDlg" title="🔀 换个版本" width="600px">
+      <div class="ver-search">
+        <el-input
+          v-model="verKeyword"
+          placeholder="搜索关键词（曲名 歌手）"
+          clearable
+          @keydown.enter="verSearch"
+        />
+        <el-button :loading="verSearching" @click="verSearch">搜索</el-button>
+      </div>
+      <el-alert v-if="verError" :title="verError" type="error" :closable="false" class="mb12" />
+      <div class="ver-list" v-loading="verSearching">
+        <div
+          v-for="s in verSongs"
+          :key="s.encryptedId || s.id"
+          class="ver-item"
+          :class="{ cur: part?.ncm?.id === s.id }"
+        >
+          <img v-if="s.cover" :src="s.cover" class="ver-cover" loading="lazy" />
+          <div class="ver-info">
+            <div class="ver-name">
+              {{ s.name }}
+              <span v-if="s.vipFlag" class="ver-vip">VIP</span>
+              <span v-if="s.payPlayFlag" class="ver-vip pay">付费</span>
+            </div>
+            <div class="ver-sub">{{ s.artist }}<template v-if="s.album"> · {{ s.album }}</template></div>
+          </div>
+          <el-button size="small" type="primary" plain :disabled="part?.ncm?.id === s.id" @click="verPick(s)">
+            {{ part?.ncm?.id === s.id ? '当前' : '选它' }}
+          </el-button>
+        </div>
+        <div v-if="!verSongs.length && !verSearching" class="ver-empty">还没有结果，换个关键词试试</div>
+      </div>
+    </el-dialog>
+
+    <el-drawer v-model="lyricDlg" size="400px">
+      <template #header>
+        <b>📄 歌词</b>
+        <span class="lyric-head-sub">网易云歌词 · 报告可选附歌词本</span>
+      </template>
+      <div v-if="lyricLoading" class="lyric-loading">歌词加载中…</div>
+      <template v-else>
+        <div class="lyric-song">「{{ part?.parsed.song || part?.title }}」 {{ part?.parsed.artist }}</div>
+        <div v-if="lyricNoLyric" class="lyric-empty">网易云标注这首歌没有歌词（纯音乐）。</div>
+        <div v-else-if="!lyricLines.length" class="lyric-empty">没有拿到歌词。</div>
+        <div v-else class="lyric-body">
+          <div v-for="(l, i) in lyricLines" :key="i" class="lyric-line">
+            <span>{{ l }}</span>
+            <span v-if="lyricTransLines[i]" class="lyric-tr">{{ lyricTransLines[i] }}</span>
+          </div>
+        </div>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -334,9 +418,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, download } from '../api'
-import type { Config, Part, Session } from '../types'
+import type { Config, NcmSong, Part, Session } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -513,6 +597,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', globalKey)
   window.removeEventListener('focus', refreshSilently)
   window.clearInterval(pollTimer)
+  window.clearInterval(lyricPollTimer)
 })
 
 // ---------- 打分 ----------
@@ -597,6 +682,76 @@ function globalKey(e: KeyboardEvent) {
   else if (e.key === 'ArrowLeft') prev()
 }
 onMounted(() => document.addEventListener('keydown', globalKey))
+
+// ---------- 报分连录：一行填完整曲所有分 ----------
+const quickRef = ref<HTMLInputElement | null>(null)
+const quickText = ref('')
+const quickPlaceholder = computed(() =>
+  cfg.value?.persons.map((_, i) => (i === 0 ? '如 9' : '8.5')).join(' ') || ''
+)
+
+function applyQuick() {
+  if (!session.value || !part.value || !cfg.value) return
+  const raw = quickText.value.trim()
+  if (!raw) {
+    ElMessage.info('输入为空：直接回车只跳下一首，分数没动')
+    next()
+    focusQuick()
+    return
+  }
+  const tokens = raw.split(/\s+/)
+  const persons = cfg.value.persons
+  if (tokens.length > persons.length) {
+    ElMessage.error(`多打了：最多 ${persons.length} 个值（${persons.join(' ')}）`)
+    return
+  }
+  const min = cfg.value.scoreMin
+  const max = cfg.value.scoreMax
+  const plan: { person: string; score?: number; fav?: boolean }[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t === '--') {
+      plan.push({ person: persons[i] })
+      continue
+    }
+    const fav = t.endsWith('*')
+    const num = Number(fav ? t.slice(0, -1) : t)
+    if (Number.isNaN(num) || num < min || num > max) {
+      ElMessage.error(`第 ${i + 1} 个值「${t}」不是 ${min}~${max} 的分数，整行没提交`)
+      return
+    }
+    plan.push({ person: persons[i], score: Math.round(num), fav })
+  }
+  for (const p of plan) {
+    if (p.score === undefined) delete part.value.scores[p.person]
+    else part.value.scores[p.person] = p.score
+    if (p.fav && !part.value.favorites.includes(p.person)) part.value.favorites.push(p.person)
+  }
+  quickText.value = ''
+  // 跳到下一个待评曲并保持光标在连报框（现场报分节奏不断）
+  const parts = session.value.parts
+  for (let step = 1; step <= parts.length; step++) {
+    const i = (currentIndex.value + step) % parts.length
+    if (!parts[i].skipped && !hasScore(parts[i])) {
+      currentIndex.value = i
+      focusQuick()
+      return
+    }
+  }
+  ElMessage.success('全部评完了！可以去生成报告了 🎉')
+}
+
+function focusQuick() {
+  nextTick(() => {
+    quickRef.value?.focus()
+    quickRef.value?.select()
+  })
+}
+
+// ---------- 现场大屏 ----------
+function openStage() {
+  window.open(`${location.origin}${location.pathname}#/session/${sessionId}/stage`, 'oped-stage')
+}
 
 // ---------- 悬浮面板 ----------
 function openPip() {
@@ -815,15 +970,60 @@ async function ncmBatch() {
   else ElMessage.success(msg)
 }
 
+// ---------- 远端资料库状态（已红心/已入歌单标记 + 同步前预览） ----------
+const libStatus = ref<Record<number, { hearted: boolean | null; inPlaylist: boolean | null }>>({})
+
+function libOf(page: number) {
+  return libStatus.value[page]
+}
+
+async function refreshLib() {
+  if (!session.value) return
+  try {
+    const r = await api.ncmLibrary(sessionId)
+    libStatus.value = r.parts || {}
+  } catch {
+    /* 未登录/网络问题时静默：只是没有小标记 */
+  }
+}
+
+onMounted(() => refreshLib())
+
+/** 收藏歌确认弹窗：网易云查询接口个人权限未开放，无法远端预判，去重靠写入响应 */
+async function syncPreview(kind: 'heart' | 'playlist') {
+  const favs = (session.value?.parts || []).filter(
+    p => !p.skipped && p.favorites?.length && p.ncm?.encryptedId
+  )
+  if (!favs.length) {
+    ElMessage.warning('没有既★收藏、又已🎵匹配网易云的歌')
+    return null
+  }
+  const label = kind === 'heart' ? '「喜欢的音乐」（红心）' : '目标歌单'
+  const dupNote = kind === 'playlist' ? '网易云会自动去重，重复的不会重复入库' : '已红心过的会原样跳过'
+  try {
+    await ElMessageBox.confirm(`本期共 ${favs.length} 首收藏歌将同步到${label}，${dupNote}。开始同步？`, kind === 'heart' ? '❤ 同步红心' : '★ 同步到歌单', {
+      confirmButtonText: '同步',
+      cancelButtonText: '先不了',
+      type: 'info'
+    })
+    return { favs: favs.length, already: 0 }
+  } catch {
+    return null
+  }
+}
+
 const ncmSyncing = ref(false)
 async function ncmSyncFav() {
   if (!(await ncmGuardReady()) || !session.value) return
+  const preview = await syncPreview('playlist')
+  if (!preview) return
   ncmSyncing.value = true
   try {
     const r = await api.ncmSyncFavorites(sessionId)
     ElMessage.success(
       `同步完成：${r.songs} 首收藏歌（来自 ${r.parts} 个分 P）加入歌单，新增 ${r.added}、重复 ${r.duplicate}`
     )
+    refreshLib()
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
@@ -834,6 +1034,8 @@ async function ncmSyncFav() {
 const ncmHearting = ref(false)
 async function ncmHeartFav() {
   if (!(await ncmGuardReady()) || !session.value) return
+  const preview = await syncPreview('heart')
+  if (!preview) return
   ncmHearting.value = true
   try {
     const r = await api.ncmHeartFavorites(sessionId)
@@ -845,10 +1047,175 @@ async function ncmHeartFav() {
     } else {
       ElMessage.success(msg + '，去网易云「喜欢的音乐」看看吧')
     }
+    refreshLib()
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
     ncmHearting.value = false
+  }
+}
+
+// ---------- 撤销本期同步 ----------
+const ncmUndoing = ref(false)
+async function ncmUndo() {
+  if (!(await ncmGuardReady()) || !session.value) return
+  try {
+    await ElMessageBox.confirm(
+      '取消本期已同步的红心，并把本期★收藏的歌移出目标歌单。只动本期收藏的歌，账号里其他收藏不受影响。',
+      '↩ 撤销本期同步',
+      { confirmButtonText: '撤销', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  ncmUndoing.value = true
+  try {
+    const r = await api.ncmUndoSync(sessionId, true, true)
+    let msg = `已撤销：取消红心 ${r.unhearted}/${r.songs}，移出歌单 ${r.removed}`
+    if (r.heartFailed.length) msg += `（红心失败 ${r.heartFailed.length}，多为付费/版权限制）`
+    ElMessage.success(msg)
+    refreshLib()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmUndoing.value = false
+  }
+}
+
+// ---------- 换版本：搜索候选手动选定 ----------
+const verDlg = ref(false)
+const verKeyword = ref('')
+const verSearching = ref(false)
+const verSongs = ref<NcmSong[]>([])
+const verError = ref('')
+
+function fallbackKeyword(p: Part): string {
+  const song = String(p.parsed?.song || '').trim()
+  let name = song
+  if (song.includes('／')) {
+    const orig = song.split('／').slice(1).join('／').trim()
+    if (orig) name = orig
+  }
+  return `${name} ${String(p.parsed?.artist || '')}`.trim()
+}
+
+async function openVer() {
+  if (!part.value) return
+  verKeyword.value = part.value.ncm?.keyword || fallbackKeyword(part.value)
+  verSongs.value = []
+  verError.value = ''
+  verDlg.value = true
+  verSearch()
+}
+
+async function verSearch() {
+  const kw = verKeyword.value.trim()
+  if (!kw) return
+  verSearching.value = true
+  verError.value = ''
+  try {
+    const r = await api.ncmSearch(kw)
+    verSongs.value = r.songs
+    if (!r.songs.length) verError.value = '没有搜到结果，换个关键词'
+  } catch (e) {
+    verError.value = (e as Error).message
+  } finally {
+    verSearching.value = false
+  }
+}
+
+async function verPick(s: NcmSong) {
+  if (!part.value) return
+  try {
+    const saved = await api.ncmSetSong(sessionId, part.value.page, s as unknown as Record<string, unknown>)
+    part.value.ncm = saved
+    verDlg.value = false
+    ElMessage.success(`已换成「${saved.name}」${saved.artist ? ` - ${saved.artist}` : ''}`)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+// ---------- 歌词（查看即缓存） ----------
+const lyricDlg = ref(false)
+const lyricLoading = ref(false)
+const lyricText = ref('')
+const lyricTrans = ref('')
+const lyricNoLyric = ref(false)
+
+function splitLrc(lrc: string): string[] {
+  return String(lrc || '')
+    .split('\n')
+    .map(l => l.replace(/^\[[^\]]*\]\s*/, '').trimEnd())
+    .filter(l => l.trim().length > 0)
+}
+
+const lyricLines = computed(() => splitLrc(lyricText.value))
+const lyricTransLines = computed(() => splitLrc(lyricTrans.value))
+
+async function openLyric() {
+  if (!part.value?.ncm) {
+    ElMessage.warning('先关联网易云，才有歌词可看')
+    return
+  }
+  lyricDlg.value = true
+  if (part.value.ncm.lyric) {
+    lyricText.value = part.value.ncm.lyric.text || ''
+    lyricTrans.value = part.value.ncm.lyric.trans || ''
+    lyricNoLyric.value = Boolean(part.value.ncm.lyric.noLyric)
+    return
+  }
+  lyricLoading.value = true
+  lyricText.value = ''
+  lyricTrans.value = ''
+  lyricNoLyric.value = false
+  try {
+    const r = await api.ncmLyric(sessionId, part.value.page)
+    lyricText.value = r.text || ''
+    lyricTrans.value = r.trans || ''
+    lyricNoLyric.value = Boolean(r.noLyric)
+    if (part.value?.ncm) {
+      part.value.ncm.lyric = { text: r.text || '', trans: r.trans || '', noLyric: r.noLyric }
+    }
+  } catch (e) {
+    lyricDlg.value = false
+    ElMessage.error((e as Error).message)
+  } finally {
+    lyricLoading.value = false
+  }
+}
+
+// ---------- 歌词预取（报告附歌词本） ----------
+const lyricPrefetching = ref(false)
+let lyricPollTimer: number | undefined
+
+async function prefetchLyrics() {
+  if (!(await ncmGuardReady()) || !session.value) return
+  try {
+    const r = await api.ncmLyricPrefetchStart(sessionId)
+    if (!r.total) {
+      ElMessage.info('本期匹配的歌都已经有歌词缓存了，直接出报告即可')
+      return
+    }
+    lyricPrefetching.value = true
+    ElMessage.info(`开始预取歌词：共 ${r.total} 首，完成后报告自动附歌词本`)
+    window.clearInterval(lyricPollTimer)
+    lyricPollTimer = window.setInterval(async () => {
+      try {
+        const st = await api.ncmLyricPrefetchStatus(sessionId)
+        if (!st.running) {
+          window.clearInterval(lyricPollTimer)
+          lyricPrefetching.value = false
+          ElMessage.success(`歌词预取完成（${st.done}/${st.total}）`)
+          refreshSilently()
+        }
+      } catch {
+        window.clearInterval(lyricPollTimer)
+        lyricPrefetching.value = false
+      }
+    }, 2000)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
   }
 }
 function openEdit() {
@@ -1057,6 +1424,75 @@ function fmtDur(sec: number) {
 .favbtn:hover { transform: scale(1.15); }
 .favbtn.on { color: #f7a35c; }
 .hint { color: #9499a0; font-size: 12.5px; margin: 10px 0 0; }
+
+.quickrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 8px 10px;
+  background: #fffaf3;
+  border: 1px solid #ffe9c8;
+  border-radius: 10px;
+  flex-wrap: wrap;
+}
+.qlabel { font-weight: 700; color: #e6a23c; white-space: nowrap; font-size: 13.5px; }
+.qin {
+  flex: 1;
+  min-width: 200px;
+  height: 34px;
+  border: 1px solid #e6d9bd;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  background: #fff;
+}
+.qin:focus { border-color: #e6a23c; box-shadow: 0 0 0 2px #fdf3e3; }
+.qhint { color: #b0a489; font-size: 12px; }
+
+.libtag { margin-left: 6px; vertical-align: 1px; }
+.lb { margin-left: 3px; font-size: 11px; }
+.lb.heart { color: #f56c6c; }
+.lb.pl { color: #67c23a; }
+
+.ver-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.ver-list { min-height: 120px; display: flex; flex-direction: column; gap: 6px; }
+.ver-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+}
+.ver-item.cur { border-color: #fb7299; background: #fff0f4; }
+.ver-cover { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.ver-info { flex: 1; min-width: 0; }
+.ver-name { font-weight: 600; font-size: 14px; }
+.ver-sub { color: #9499a0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ver-vip {
+  font-size: 10.5px;
+  color: #e6a23c;
+  border: 1px solid #ecd9b0;
+  background: #fdf6ec;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+.ver-vip.pay { color: #f56c6c; border-color: #f3d1d1; background: #fef0f0; }
+.ver-empty { color: #9499a0; text-align: center; padding: 24px 0; font-size: 13px; }
+
+.lyric-head-sub { color: #9499a0; font-size: 12px; margin-left: 10px; font-weight: 400; }
+.lyric-loading { color: #9499a0; padding: 20px 0; }
+.lyric-song { color: #61666d; font-size: 13.5px; margin-bottom: 12px; }
+.lyric-empty { color: #9499a0; padding: 20px 0; }
+.lyric-body { line-height: 1.7; }
+.lyric-line { margin-bottom: 10px; }
+.lyric-line span { display: block; }
+.lyric-tr { color: #9499a0; font-size: 12.5px; margin-top: 2px; }
 
 .extra { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 

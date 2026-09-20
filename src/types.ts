@@ -42,6 +42,29 @@ export interface NcmSong {
   vipFlag?: boolean
   keyword?: string
   matchedAt?: string
+  /** 歌词缓存（预取/查看后落库，报告歌词本用） */
+  lyric?: NcmLyric
+}
+
+export interface NcmLyric {
+  text: string
+  trans?: string
+  noLyric?: boolean
+  fetchedAt?: string
+}
+
+/** 远端资料库状态：这首歌是否已红心/已入目标歌单 */
+export interface NcmLibEntry {
+  hearted: boolean | null
+  inPlaylist: boolean | null
+}
+
+export interface NcmLibStatus {
+  parts: Record<number, NcmLibEntry>
+  heartCount: number | null
+  targetCount: number | null
+  heartError?: string | null
+  targetError?: string | null
 }
 
 export interface Session {

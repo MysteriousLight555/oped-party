@@ -23,6 +23,11 @@ const SEARCH_PATH = '/openapi/music/basic/complex/search'
 const ANON_PATH = '/openapi/music/basic/oauth2/login/anonymous'
 const QR_CREATE_PATH = '/openapi/music/basic/user/oauth2/qrcodekey/get/v2'
 const QR_POLL_PATH = '/openapi/music/basic/oauth2/device/login/qrcode/get'
+const REFRESH_PATH = '/openapi/music/basic/user/oauth2/token/refresh/v2'
+const PLAYLIST_SONGS_PATH = '/openapi/music/basic/playlist/song/list/get/v5'
+const PLAYLIST_STAR_PATH = '/openapi/music/basic/playlist/star/get/v2'
+const PLAYLIST_BATCH_DELETE_PATH = '/openapi/music/basic/playlist/song/batch/delete'
+const LYRIC_PATH = '/openapi/music/basic/song/lyric/get/v2'
 
 function loadAuth() {
   try {
@@ -112,11 +117,65 @@ async function anonToken(auth) {
   return r.json?.data?.accessToken || ''
 }
 
-/** 有效用户 token；不存在或已过期返回 '' */
+/** 有效用户 token；不存在或已过期返回 ''（同步版，仅用于状态展示） */
 function validUserToken(auth) {
   if (!auth.userToken) return ''
   if (auth.userExpireAt && Date.now() > auth.userExpireAt) return ''
   return auth.userToken
+}
+
+/**
+ * 用 refreshToken 续期（AT/RT 同时滚动）。需要 data/ncm-auth.json 里有
+ * appSecret（刷新接口要求 clientId+clientSecret+refreshToken 三件套）。
+ * 成功后新 token 直接落盘，返回 true。
+ */
+async function refreshUserToken(auth) {
+  if (!auth.refreshToken || !auth.appSecret) return false
+  const r = await signedCall(
+    auth,
+    'GET',
+    REFRESH_PATH,
+    { clientId: auth.appId, clientSecret: auth.appSecret, refreshToken: auth.refreshToken },
+    auth.userToken || undefined
+  )
+  const d = r.json?.data
+  if (r.json?.code === 200 && d?.accessToken) {
+    saveAuthPatch({
+      userToken: d.accessToken,
+      refreshToken: d.refreshToken || auth.refreshToken,
+      userExpireAt: Date.now() + (d.expiresTime ? d.expiresTime * 1000 - 60000 : 6 * 86400000)
+    })
+    return true
+  }
+  return false
+}
+
+/** 业务调用用：过期先自动续期，续不了才返回空 */
+async function userToken(auth) {
+  if (!auth.userToken) return ''
+  if (!auth.userExpireAt || Date.now() <= auth.userExpireAt) return auth.userToken
+  const refreshed = await refreshUserToken(auth)
+  if (!refreshed) return ''
+  return loadAuth().userToken
+}
+
+/**
+ * 带登录态的业务调用：token 过期(1406)/未授权(301)时先试一次 refreshToken 续期再重试，
+ * 避免临界点报错。返回 {token, r}，token 为空表示无法登录。
+ */
+async function authedCall(auth, method, apiPath, biz = {}) {
+  let token = await userToken(auth)
+  if (!token) token = await anonToken(auth)
+  let r = await signedCall(auth, method, apiPath, biz, token || undefined)
+  const code = r.json?.code
+  if ((code === 1406 || code === 301 || code === 1408) && auth.refreshToken && auth.appSecret) {
+    const ok = await refreshUserToken(auth)
+    if (ok) {
+      token = loadAuth().userToken
+      r = await signedCall(auth, method, apiPath, biz, token)
+    }
+  }
+  return { token, r }
 }
 
 // ---------- 对外状态 ----------
@@ -129,6 +188,7 @@ export async function ncmStatus() {
     loggedIn: Boolean(token),
     expireAt: auth.userExpireAt || null,
     tokenRemainingHours: token ? Math.max(0, Math.round(((auth.userExpireAt || 0) - Date.now()) / 3600000)) : 0,
+    canAutoRefresh: Boolean(auth.refreshToken && auth.appSecret),
     mpv
   }
 }
@@ -154,6 +214,7 @@ export async function qrCreate() {
     saveAuthPatch({ deviceId: 'ncmcli_' + crypto.randomBytes(8).toString('hex') })
   }
   let token = validUserToken(auth)
+  if (!token) token = await userToken(auth)
   if (!token) token = await anonToken(auth)
   const r = await signedCall(auth, 'GET', QR_CREATE_PATH, { type: 2, expiredKey: '300' }, token)
   const uniKey = r.json?.data?.uniKey
@@ -166,6 +227,7 @@ export async function qrCreate() {
 export async function qrPoll(uniKey) {
   const auth = loadAuth()
   let token = validUserToken(auth)
+  if (!token) token = await userToken(auth)
   if (!token) token = await anonToken(auth)
   const r = await signedCall(auth, 'GET', QR_POLL_PATH, { key: uniKey, clientId: auth.appId }, token)
   const d = r.json?.data || {}
@@ -203,12 +265,9 @@ function normalizeSong(s) {
 }
 
 export async function searchSong(auth, keyword) {
-  let token = validUserToken(auth)
-  if (!token) token = await anonToken(auth)
-  let r = await signedCall(auth, 'GET', SEARCH_PATH, { keyword }, token)
-  let j = r.json
-  if (j?.code === 301 || j?.code === 1406) {
-    // token 过期/无效：补一次匿名重试没意义，直接报需要登录
+  const { r } = await authedCall(auth, 'GET', SEARCH_PATH, { keyword })
+  const j = r.json
+  if (j?.code === 301 || j?.code === 1406 || j?.code === 1408) {
     return { ok: false, needLogin: true, error: j.message || '需要重新扫码登录' }
   }
   const songs = (j?.data?.songs || []).map(normalizeSong)
@@ -249,9 +308,7 @@ const PLAYLIST_CREATED_PATH = '/openapi/music/basic/playlist/created/get/v2'
 
 /** 红心/取消红心一首歌（songId 为加密 ID）。返回 {ok, paid?} */
 export async function heartSong(auth, encryptedId, isLike = true) {
-  const token = validUserToken(auth)
-  if (!token) return { ok: false, error: '登录已过期，请重新扫码' }
-  const r = await signedCall(auth, 'GET', HEART_PATH, { songId: encryptedId, isLike }, token)
+  const { r } = await authedCall(auth, 'GET', HEART_PATH, { songId: encryptedId, isLike })
   const j = r.json
   if (j?.code === 200) return { ok: true }
   const msg = j?.message || j?.msg || JSON.stringify(j).slice(0, 120)
@@ -261,12 +318,10 @@ export async function heartSong(auth, encryptedId, isLike = true) {
 
 /** 用户创建的歌单列表（含末尾的红心歌单，specialType=5） */
 export async function listCreatedPlaylists(auth) {
-  const token = validUserToken(auth)
-  if (!token) return { ok: false, error: '登录已过期，请重新扫码' }
   const out = []
   let offset = 0
   for (let page = 0; page < 5; page++) {
-    const r = await signedCall(auth, 'GET', PLAYLIST_CREATED_PATH, { limit: 500, offset }, token)
+    const { r } = await authedCall(auth, 'GET', PLAYLIST_CREATED_PATH, { limit: 500, offset })
     const records = r.json?.data?.records
     if (!Array.isArray(records)) {
       if (page === 0) return { ok: false, error: r.json?.message || '获取歌单列表失败' }
@@ -293,14 +348,12 @@ export async function listCreatedPlaylists(auth) {
  * 返回 {added, duplicate, results:[{ids, data}]}
  */
 export async function syncToPlaylist(auth, playlistId, encryptedIds) {
-  const token = validUserToken(auth)
-  if (!token) return { ok: false, error: '登录已过期，请重新扫码' }
   let added = 0
   let duplicate = 0
   const results = []
   for (let i = 0; i < encryptedIds.length; i += BATCH_SIZE) {
     const chunk = encryptedIds.slice(i, i + BATCH_SIZE)
-    const r = await signedCall(auth, 'GET', BATCH_LIKE_PATH, { playlistId, songIdList: chunk }, token)
+    const { r } = await authedCall(auth, 'GET', BATCH_LIKE_PATH, { playlistId, songIdList: chunk })
     const j = r.json
     if (j?.code !== 200 && j?.code !== undefined && j?.data !== true && !Array.isArray(j?.data)) {
       return {
@@ -326,6 +379,107 @@ export async function syncToPlaylist(auth, playlistId, encryptedIds) {
   return { ok: true, added, duplicate, results }
 }
 
+// ---------- 歌单/红心内容读取（同步预览、已入库标记用） ----------
+function normalizeTrack(t) {
+  return {
+    encryptedId: t.id || '',
+    name: t.name || '',
+    artist: (t.fullArtists || t.artists || []).map(a => a.name).join('/'),
+    album: t.album?.name || '',
+    cover: t.coverImgUrl || '',
+    durationMs: t.duration || 0,
+    liked: Boolean(t.liked)
+  }
+}
+
+/** 某个歌单内的全部歌曲（v5 接口，500/页） */
+export async function listPlaylistSongs(auth, playlistId) {
+  const out = []
+  let offset = 0
+  for (let page = 0; page < 20; page++) {
+    const { r } = await authedCall(auth, 'GET', PLAYLIST_SONGS_PATH, {
+      playlistId,
+      limit: 500,
+      offset
+    })
+    const j = r.json
+    if (j?.code !== 200) {
+      if (page === 0) return { ok: false, error: j?.message || '获取歌单内容失败' }
+      break
+    }
+    const tracks = j?.data?.tracks
+    if (!Array.isArray(tracks)) {
+      if (page === 0) return { ok: false, error: j?.subCode === '10007' ? '歌单不存在或为空' : '获取歌单内容失败' }
+      break
+    }
+    for (const t of tracks) out.push(normalizeTrack(t))
+    const total = j?.data?.trackCount ?? out.length
+    offset += tracks.length
+    if (offset >= total || !tracks.length) break
+  }
+  return { ok: true, songs: out, trackCount: out.length }
+}
+
+/**
+ * 用户红心歌单全部歌曲。个人开发者无 star/get/v2 权限（实测「应用未授权当前接口」），
+ * 但 created/get/v2 的末尾就挂着红心歌单（specialType=5），拿 id 后用 v5 读歌曲列表。
+ */
+export async function listHeartSongs(auth) {
+  const pl = await listCreatedPlaylists(auth)
+  if (!pl.ok) return pl
+  const heart = pl.playlists.find(p => p.isHeart)
+  if (!heart) return { ok: false, error: '歌单列表里没有找到红心歌单（specialType=5）' }
+  const songs = await listPlaylistSongs(auth, heart.id)
+  if (!songs.ok) return songs
+  return {
+    ok: true,
+    songs: songs.songs,
+    trackCount: heart.trackCount || songs.trackCount,
+    playlistId: heart.id,
+    name: heart.name
+  }
+}
+
+/** 从自己的歌单批量移除歌曲（撤销入库用） */
+export async function removeFromPlaylist(auth, playlistId, encryptedIds) {
+  let removed = 0
+  let missing = 0
+  for (let i = 0; i < encryptedIds.length; i += BATCH_SIZE) {
+    const chunk = encryptedIds.slice(i, i + BATCH_SIZE)
+    const { r } = await authedCall(auth, 'GET', PLAYLIST_BATCH_DELETE_PATH, {
+      playlistId,
+      songIdList: chunk
+    })
+    const j = r.json
+    if (j?.code !== 200) {
+      return {
+        ok: false,
+        error: `批量移除失败：${j?.message || j?.msg || JSON.stringify(j).slice(0, 120)}`,
+        partial: { removed }
+      }
+    }
+    if (j?.data === true) removed += chunk.length
+    else if (Array.isArray(j?.data)) {
+      removed += j.data.length
+      missing += chunk.length - j.data.length
+    } else removed += chunk.length
+  }
+  return { ok: true, removed, missing }
+}
+
+// ---------- 歌词（逐行 + 翻译） ----------
+export async function getLyric(auth, encryptedId) {
+  const { r } = await authedCall(auth, 'GET', LYRIC_PATH, { songId: encryptedId })
+  const j = r.json
+  if (j?.code !== 200) return { ok: false, error: j?.message || '获取歌词失败' }
+  const d = j?.data || {}
+  return {
+    ok: true,
+    text: String(d.lyric || d.txtLyric || ''),
+    trans: String(d.transLyric || ''),
+    noLyric: Boolean(d.noLyric || d.pureMusic)
+  }
+}
 // ---------- CLI 播放（可选能力：需用户另行 ncm-cli login + 安装 mpv） ----------
 export async function playSong(part) {
   const { spawn } = await import('node:child_process')

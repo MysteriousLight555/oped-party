@@ -54,9 +54,50 @@ function tagPills(tags) {
 function songCell(session, part) {
   const link = biliLink(session, part.page)
   const name = esc(songTitle(part))
-  return link
+  const cover = part.ncm?.cover
+    ? `<img class="cover" src="${esc(part.ncm.cover)}" loading="lazy" alt="">`
+    : ''
+  const title = link
     ? `<a class="song" href="${link}" target="_blank">${name}</a><span class="go">↗</span>`
     : `<span class="song">${name}</span>`
+  const ncm = part.ncm?.id
+    ? ` <a class="ncm" href="https://music.163.com/#/song?id=${esc(part.ncm.id)}" target="_blank" title="网易云音乐试听">♪</a>`
+    : ''
+  return `${cover}<span class="songwrap">${title}${ncm}</span>`
+}
+
+function lyricLines(lrc) {
+  return String(lrc || '')
+    .split('\n')
+    .map(l => l.replace(/^\[[^\]]*\]\s*/, '').trimEnd())
+    .filter(l => l.trim().length > 0)
+}
+
+function lyricSection(st) {
+  const withLyric = st.ranked.filter(
+    r => r.part.ncm?.lyric && !r.part.ncm.lyric.noLyric && (r.part.ncm.lyric.text || r.part.ncm.lyric.trans)
+  )
+  if (!withLyric.length) return ''
+  const cards = withLyric
+    .map(r => {
+      const p = r.part
+      const ly = p.ncm.lyric
+      const cover = p.ncm.cover ? `<img class="lcover" src="${esc(p.ncm.cover)}" loading="lazy" alt="">` : ''
+      const orig = lyricLines(ly.text).join('\n')
+      const trans = lyricLines(ly.trans).join('\n')
+      const body = trans
+        ? `<div class="lbody"><pre class="ltext">${esc(orig)}</pre><pre class="ltext trans">${esc(trans)}</pre></div>`
+        : `<div class="lbody"><pre class="ltext">${esc(orig)}</pre></div>`
+      return `<details class="lcard">
+<summary>${cover}<span class="lsong">「${esc(songTitle(p))}」</span>
+<span class="lartist">${esc(p.ncm.artist || p.parsed?.artist || '')}</span></summary>
+${body}
+</details>`
+    })
+    .join('')
+  return `<section id="lyrics"><h2>📄 歌词本</h2>
+<p class="legend">网易云官方歌词，日文歌附中文翻译（工作台「预取歌词」后生成）。</p>
+<div class="lgrid">${cards}</div></section>`
 }
 
 function fmtDur(sec) {
@@ -111,6 +152,21 @@ td .dv,.dvg2{font-size:12px}
 .tag.w3{font-size:15px;padding:2px 13px;font-weight:600}
 .tagcloud{line-height:2.4}
 .star{color:#f7a35c;font-weight:600;white-space:nowrap}
+.cover{width:40px;height:40px;border-radius:8px;object-fit:cover;vertical-align:middle;margin-right:8px;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.songwrap{display:inline-block;vertical-align:middle}
+.ncm{font-weight:700;color:#c20c0c;margin-left:6px}
+.pcover{width:34px;height:34px;border-radius:8px;vertical-align:-9px;margin-right:6px;object-fit:cover;border:1px solid rgba(255,255,255,.4)}
+.lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.lcard{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:#fff}
+.lcard summary{cursor:pointer;display:flex;align-items:center;gap:10px;list-style:none}
+.lcard summary::-webkit-details-marker{display:none}
+.lcard[open] summary{border-bottom:1px dashed var(--line);padding-bottom:8px;margin-bottom:8px}
+.lcover{width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0}
+.lsong{font-weight:600}
+.lartist{color:var(--muted);font-size:12.5px}
+.lbody{display:flex;gap:14px;flex-wrap:wrap}
+.ltext{flex:1 1 220px;margin:0;font-size:13px;line-height:1.9;white-space:pre-wrap;color:#30333a;max-height:340px;overflow:auto;font-family:inherit}
+.ltext.trans{color:#61666d;background:#faf7f5;border-radius:8px;padding:8px}
 .cmt{color:#61666d;font-size:13px;max-width:230px}
 .dim{color:var(--muted)}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
@@ -161,10 +217,11 @@ function podium(st, session) {
       const p = r.part
       const pr = p.parsed || {}
       const dvg = r.div != null ? `<div class="pmeta">反差 ${fmtDvg(r.div)}（主观 vs 维度参考）</div>` : ''
+      const cover = p.ncm?.cover ? `<img class="pcover" src="${esc(p.ncm.cover)}" loading="lazy" alt="">` : ''
       return `<div class="pcard ${classes[i]}">
 <div class="medal">${medals[i]}</div>
 <div class="pavg">${r.avg ?? '—'}</div>
-<div class="psong">「${esc(songTitle(p))}」</div>
+<div class="psong">${cover}「${esc(songTitle(p))}」</div>
 <div class="pmeta">${esc(pr.artist || '')}${pr.anime ? ` · 《${esc(pr.anime)}》` : ''}${pr.kind ? ` · ${esc(pr.kind)}` : ''}</div>
 <div class="pmeta">★ ${r.favCount} 人收藏</div>${dvg}
 </div>`
@@ -322,7 +379,8 @@ ${st.skipped.length ? `<p class="mini">跳过 ${st.skipped.length} 首：${st.sk
     st.tagStats.length ? '<a href="#tags">标签</a>' : '',
     ...st.dimBoards.map(b => `<a href="#dim-${esc(b.dim.key)}">${esc(b.dim.name)}榜</a>`),
     '<a href="#fav">收藏</a>',
-    '<a href="#persons">个人榜</a>'
+    '<a href="#persons">个人榜</a>',
+    st.ranked.some(r => r.part.ncm?.lyric) ? '<a href="#lyrics">歌词本</a>' : ''
   ].filter(Boolean)
 
   return baseHtml(
@@ -341,6 +399,7 @@ ${tagSection(st)}
 ${dimSections}
 ${favSection}
 ${personSection}
+${lyricSection(st)}
 ${restSection}
 </main>`
   )

@@ -29,9 +29,14 @@ import {
   loadAuth,
   saveAuthPatch,
   searchKeyword,
+  searchSong,
   syncToPlaylist,
   heartSong,
-  listCreatedPlaylists
+  listCreatedPlaylists,
+  listPlaylistSongs,
+  listHeartSongs,
+  removeFromPlaylist,
+  getLyric
 } from './ncm.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -481,6 +486,7 @@ app.post('/api/ncm/sync-favorites', async (req, res) => {
   if (!r.ok) {
     return res.status(502).json({ error: r.error, ...r.partial })
   }
+  libCache.clear()
   ok(res).json({
     songs: ids.length,
     parts: favParts.length,
@@ -518,7 +524,216 @@ app.post('/api/ncm/heart-favorites', async (req, res) => {
     else if (r.paid) paidSkipped.push(id)
     else failed.push({ id, error: r.error })
   }
+  libCache.clear()
   ok(res).json({ songs: ids.length, hearted, paidSkipped: paidSkipped.length, failed })
+})
+
+// ---------- 网易云：远端资料库状态（红心/目标歌单已收录哪些歌） ----------
+const libCache = new Map() // key -> {at, sets}
+
+async function ncmLibrarySets(auth) {
+  const key = `${auth.ncmPlaylistId || ''}`
+  const hit = libCache.get(key)
+  if (hit && Date.now() - hit.at < 60000) return hit.sets
+  const heart = await listHeartSongs(auth)
+  const target = auth.ncmPlaylistId
+    ? await listPlaylistSongs(auth, auth.ncmPlaylistId)
+    : { ok: false, error: '未配置目标歌单' }
+  const sets = {
+    heartIds: heart.ok ? new Set(heart.songs.map(x => x.encryptedId)) : null,
+    heartError: heart.ok ? null : heart.error,
+    targetIds: target.ok ? new Set(target.songs.map(x => x.encryptedId)) : null,
+    targetError: target.ok ? null : target.error
+  }
+  libCache.set(key, { at: Date.now(), sets })
+  return sets
+}
+
+app.get('/api/ncm/library/:sessionId', async (req, res) => {
+  const s = getSession(req.params.sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const auth = loadAuth()
+  if (!auth.userToken) return res.status(401).json({ error: '网易云登录已过期，请重新扫码' })
+  try {
+    const sets = await ncmLibrarySets(auth)
+    const parts = {}
+    for (const p of s.parts || []) {
+      if (!p.ncm?.encryptedId) continue
+      parts[p.page] = {
+        hearted: sets.heartIds ? sets.heartIds.has(p.ncm.encryptedId) : null,
+        inPlaylist: sets.targetIds ? sets.targetIds.has(p.ncm.encryptedId) : null
+      }
+    }
+    ok(res).json({
+      parts,
+      heartCount: sets.heartIds ? sets.heartIds.size : null,
+      targetCount: sets.targetIds ? sets.targetIds.size : null,
+      heartError: sets.heartError,
+      targetError: sets.targetError
+    })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
+// ---------- 网易云：歌词（结果缓存进 part.ncm.lyric，报告直接可用） ----------
+const lyricJobs = new Map() // sessionId -> {running, done, total}
+
+async function fetchPartLyric(session, part) {
+  const r = await getLyric(loadAuth(), part.ncm.encryptedId)
+  if (!r.ok) throw new Error(r.error)
+  part.ncm.lyric = { text: r.text, trans: r.trans, noLyric: r.noLyric, fetchedAt: new Date().toISOString() }
+  saveSession(session)
+  return part.ncm.lyric
+}
+
+app.get('/api/ncm/lyric/:sessionId/:page', async (req, res) => {
+  const s = getSession(req.params.sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const part = s.parts.find(p => p.page === Number(req.params.page))
+  if (!part?.ncm?.encryptedId) return res.status(400).json({ error: '这一分P还没匹配网易云歌曲' })
+  if (part.ncm.lyric) return ok(res).json({ ...part.ncm.lyric, cached: true })
+  try {
+    const lyric = await fetchPartLyric(s, part)
+    ok(res).json({ ...lyric, cached: false })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
+// 后台预取本期全部歌词（报告要附歌词本时先点这个）
+app.post('/api/ncm/lyric-prefetch/:sessionId', async (req, res) => {
+  const s = getSession(req.params.sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const auth = loadAuth()
+  if (!auth.userToken) return res.status(401).json({ error: '网易云登录已过期，请重新扫码' })
+  const job = lyricJobs.get(s.id)
+  if (job?.running) return ok(res).json({ started: true, ...job })
+  const targets = (s.parts || []).filter(p => p.ncm?.encryptedId && !p.ncm.lyric)
+  const state = { running: true, done: 0, total: targets.length }
+  lyricJobs.set(s.id, state)
+  ok(res).json({ started: true, ...state })
+  ;(async () => {
+    try {
+      for (const p of targets) {
+        try {
+          await fetchPartLyric(s, p)
+        } catch {
+          /* 单首失败不阻断预取 */
+        }
+        state.done++
+        await new Promise(r => setTimeout(r, 250))
+      }
+    } finally {
+      state.running = false
+    }
+  })()
+})
+
+app.get('/api/ncm/lyric-prefetch/:sessionId', (req, res) => {
+  const job = lyricJobs.get(req.params.sessionId)
+  ok(res).json(job || { running: false, done: 0, total: 0 })
+})
+
+// ---------- 网易云：换版本（搜索候选 + 手动选定） ----------
+app.post('/api/ncm/search', async (req, res) => {
+  const keyword = String(req.body?.keyword || '').trim()
+  if (!keyword) return res.status(400).json({ error: '缺少搜索关键词' })
+  const r = await searchSong(loadAuth(), keyword)
+  if (!r.ok) return res.status(r.needLogin ? 401 : 502).json({ error: r.error })
+  ok(res).json({ songs: r.songs.slice(0, 10) })
+})
+
+app.post('/api/ncm/set-song', (req, res) => {
+  const { sessionId, page, song } = req.body || {}
+  const s = getSession(sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const part = s.parts.find(p => p.page === Number(page))
+  if (!part) return res.status(404).json({ error: '分P不存在' })
+  if (!song?.id) return res.status(400).json({ error: '缺少歌曲信息' })
+  part.ncm = {
+    id: String(song.id),
+    encryptedId: String(song.encryptedId || ''),
+    name: String(song.name || ''),
+    artist: String(song.artist || ''),
+    album: String(song.album || ''),
+    cover: String(song.cover || ''),
+    payPlayFlag: Boolean(song.payPlayFlag),
+    vipFlag: Boolean(song.vipFlag),
+    keyword: part.ncm?.keyword || String(song.keyword || ''),
+    matchedAt: new Date().toISOString()
+  }
+  saveSession(s)
+  ok(res).json(part.ncm)
+})
+
+// 撤销本期同步：取消红心 + 从目标歌单移除（只动本期★收藏且已匹配的歌）
+app.post('/api/ncm/undo-sync', async (req, res) => {
+  const { sessionId, hearts = true, playlist = true } = req.body || {}
+  const s = getSession(sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const auth = loadAuth()
+  if (!auth.userToken) return res.status(401).json({ error: '网易云登录已过期，请重新扫码' })
+  const favParts = (s.parts || []).filter(p => !p.skipped && p.favorites?.length && p.ncm?.encryptedId)
+  if (!favParts.length) {
+    return res.status(400).json({ error: '本期没有已★收藏且已匹配网易云的歌，无需撤销' })
+  }
+  if (playlist && !auth.ncmPlaylistId) {
+    return res.status(400).json({ error: '未配置目标歌单（设置页 → 网易云音乐），本次未做任何改动' })
+  }
+  const ids = [...new Set(favParts.map(p => p.ncm.encryptedId))]
+  const result = { songs: ids.length, unhearted: 0, heartFailed: [], removed: 0 }
+  if (hearts) {
+    for (const id of ids) {
+      const r = await heartSong(auth, id, false)
+      if (r.ok) result.unhearted++
+      else result.heartFailed.push({ id, error: r.error })
+    }
+  }
+  if (playlist) {
+    if (!auth.ncmPlaylistId) return res.status(400).json({ error: '未配置目标歌单，无法从歌单移除' })
+    const r = await removeFromPlaylist(auth, auth.ncmPlaylistId, ids)
+    if (!r.ok) return res.status(502).json({ error: r.error, ...result })
+    result.removed = r.removed
+  }
+  libCache.clear()
+  ok(res).json(result)
+})
+
+// ---------- 数据备份 / 恢复（不含 data/ncm-auth.json 凭证与缓存） ----------
+app.get('/api/backup', (req, res) => {
+  const bundle = {
+    app: 'oped-party-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    config: loadConfig(),
+    sessions: listSessions()
+  }
+  const day = new Date().toISOString().slice(0, 10)
+  sendFile(res, {
+    format: 'json',
+    baseName: `oped-party-backup-${day}`,
+    inline: false,
+    content: JSON.stringify(bundle)
+  })
+})
+
+app.post('/api/restore', (req, res) => {
+  const b = req.body || {}
+  if (b.app !== 'oped-party-backup' || !b.config) {
+    return res.status(400).json({ error: '不是本工具导出的备份文件' })
+  }
+  saveConfig(b.config)
+  let n = 0
+  const ids = []
+  for (const s of Array.isArray(b.sessions) ? b.sessions : []) {
+    if (s?.id && Array.isArray(s.parts)) {
+      saveSession(s)
+      ids.push(s.id)
+      n++
+    }
+  }
+  ok(res).json({ configRestored: true, sessionsRestored: n, sessionIds: ids })
 })
 
 // ---------- 前端静态资源 ----------

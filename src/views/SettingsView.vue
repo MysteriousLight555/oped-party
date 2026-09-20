@@ -162,6 +162,10 @@
           已登录 · 剩余约 {{ ncm.tokenRemainingHours }} 小时
         </el-tag>
         <el-tag v-else type="warning" effect="plain" class="ncm-tag">未登录 / 已过期</el-tag>
+        <el-tag v-if="ncm?.canAutoRefresh" type="success" effect="plain" class="ncm-tag">自动续期就绪</el-tag>
+        <el-tag v-else-if="ncm?.loggedIn" type="info" effect="plain" class="ncm-tag">
+          重新扫码一次可开启自动续期
+        </el-tag>
       </div>
       <div v-if="ncmLogin.qrUrl" class="ncm-row">
         <span>
@@ -176,7 +180,8 @@
           {{ ncm?.loggedIn ? '重新扫码登录' : '扫码登录' }}
         </el-button>
         <span class="hint" style="margin: 0 0 0 10px">
-          token 有效期 24 小时；过期后工作台匹配会提示回来重扫。本机播放（▶）还需安装 mpv 并
+          「自动续期就绪」时，token 过期会用 refreshToken 自动续（20 天不活跃才需重扫）；
+          未开启时有效期 24 小时，过期后回这里重扫。本机播放（▶）还需安装 mpv 并
           npx @music163/ncm-cli login。
         </span>
       </div>
@@ -205,7 +210,7 @@
       </p>
     </el-card>
 
-    <el-card shadow="never">
+    <el-card shadow="never" class="mb16">
       <template #header><b>分数范围</b></template>
       <div class="rangerow">
         最低 <el-input-number v-model="cfg.scoreMin" :min="0" :max="cfg.scoreMax - 1" />
@@ -213,13 +218,31 @@
       </div>
       <p class="hint">默认 1~10 整数分。改范围不影响已有分数。</p>
     </el-card>
+
+    <el-card shadow="never">
+      <template #header><b>数据备份</b>（全部期次 + 配置打包为一个 JSON 文件）</template>
+      <div class="ncm-row">
+        <el-button @click="downloadBackup">⬇ 下载数据备份</el-button>
+        <el-button :loading="restoring" @click="triggerRestore">⬆ 导入恢复</el-button>
+        <input
+          ref="restoreInput"
+          type="file"
+          accept="application/json,.json"
+          style="display: none"
+          @change="onRestoreFile"
+        />
+      </div>
+      <p class="hint">
+        备份含全部期次与配置，不含网易云登录凭据（换机后重新扫码即可）。恢复时备份里的期次会覆盖本机同名期次，其余不动。
+      </p>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { api } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { api, download } from '../api'
 import type { Config, Dim } from '../types'
 
 // 与后端 SALON_TAGS 保持一致：一键补齐老饕情绪标签
@@ -446,6 +469,56 @@ async function save() {
     ElMessage.error((e as Error).message)
   } finally {
     saving.value = false
+  }
+}
+
+// ---------- 数据备份 / 恢复 ----------
+const restoreInput = ref<HTMLInputElement | null>(null)
+const restoring = ref(false)
+
+function downloadBackup() {
+  download(api.backupUrl)
+}
+
+function triggerRestore() {
+  restoreInput.value?.click()
+}
+
+async function onRestoreFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  let bundle: { app?: string; exportedAt?: string; sessions?: unknown[] }
+  try {
+    bundle = JSON.parse(await file.text())
+  } catch {
+    ElMessage.error('文件不是合法 JSON')
+    return
+  }
+  if (bundle?.app !== 'oped-party-backup') {
+    ElMessage.error('不是本工具导出的备份文件')
+    return
+  }
+  const n = Array.isArray(bundle.sessions) ? bundle.sessions.length : 0
+  try {
+    await ElMessageBox.confirm(
+      `备份导出于 ${new Date(bundle.exportedAt || '').toLocaleString('zh-CN')}，含 ${n} 个期次与配置。恢复会覆盖本机同名期次，继续？`,
+      '导入恢复',
+      { confirmButtonText: '恢复', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  restoring.value = true
+  try {
+    const r = await api.restoreBackup(bundle)
+    ElMessage.success(`恢复完成：${r.sessionsRestored} 个期次已写回`)
+    cfg.value = await api.getConfig()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    restoring.value = false
   }
 }
 </script>
