@@ -345,8 +345,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="editDlg" title="修正歌曲信息" width="480px">
-      <el-form label-width="70px">
+    <el-dialog v-model="editDlg" title="修正歌曲信息" width="480px">      <el-form label-width="70px">
         <el-form-item label="类型"><el-input v-model="editForm.kind" placeholder="如 先行OP / 正式ED" /></el-form-item>
         <el-form-item label="曲名"><el-input v-model="editForm.song" /></el-form-item>
         <el-form-item label="歌手"><el-input v-model="editForm.artist" /></el-form-item>
@@ -411,6 +410,45 @@
         </div>
       </template>
     </el-drawer>
+
+    <!-- 悬浮面板内容：平时隐藏，开 PiP 时整个节点搬进置顶窗（只用原生控件，避免组件库弹层跨文档问题） -->
+    <div ref="pipHostRef" class="pip-host">
+      <div v-if="part && cfg" class="ph-wrap">
+        <div class="ph-song">
+          <span v-if="part.parsed.kind" class="ph-kind">{{ part.parsed.kind }}</span>
+          <span class="ph-title">「{{ part.parsed.song || part.title }}」</span>
+          <span class="ph-meta">{{ part.parsed.artist }} · 《{{ part.parsed.anime || '？' }}》</span>
+        </div>
+        <div class="ph-rows">
+          <div v-for="pn in cfg.persons" :key="pn" class="ph-row">
+            <span class="ph-name">{{ pn }}</span>
+            <input
+              class="ph-in"
+              :value="part.scores[pn] ?? ''"
+              placeholder="—"
+              inputmode="numeric"
+              @input="onPipInput($event, pn)"
+              @blur="pipClamp(pn)"
+              @keydown.enter.prevent="pipEnter($event)"
+            />
+            <button
+              class="ph-fav"
+              :class="{ on: part.favorites.includes(pn) }"
+              title="收藏"
+              @click="toggleFav(pn)"
+            >
+              ★
+            </button>
+          </div>
+        </div>
+        <div class="ph-foot">
+          <button class="ph-btn" @click="pipSkipNext">跳过 ↓</button>
+          <button class="ph-btn primary" @click="next">下一首 →</button>
+          <span class="ph-pos">{{ votedCount }}/{{ totalActive }}</span>
+        </div>
+        <p class="ph-hint">回车跳下一人 · 置顶窗直接打，电脑这边自动同步</p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -594,6 +632,11 @@ function leave() {
 
 onBeforeUnmount(() => {
   if (saveStatus.value === 'saving') doSave()
+  // PiP 还开着就把节点搬回来，避免组件卸载时节点留在别的文档里
+  if (pipWin && !pipWin.closed && pipHostRef.value) {
+    document.body.append(pipHostRef.value)
+    pipHostRef.value.classList.remove('in-pip')
+  }
   document.removeEventListener('keydown', globalKey)
   window.removeEventListener('focus', refreshSilently)
   window.clearInterval(pollTimer)
@@ -753,26 +796,102 @@ function openStage() {
   window.open(`${location.origin}${location.pathname}#/session/${sessionId}/stage`, 'oped-stage')
 }
 
-// ---------- 悬浮面板 ----------
-function openPip() {
-  const url = `${location.origin}${location.pathname}#/pip/${sessionId}`
-  const dpip = (
-    window as unknown as {
-      documentPictureInPicture?: {
-        requestWindow: (o: object) => Promise<Window>
-        window: Window | null
+// ---------- 悬浮面板（Document Picture-in-Picture：把打分 DOM 搬进置顶窗） ----------
+// 注意：PiP 窗口导航离开初始文档会被浏览器立即关闭，所以只能"搬节点+拷样式"，不能给它塞 URL
+const pipHostRef = ref<HTMLElement | null>(null)
+let pipWin: Window | null = null
+
+function onPipInput(e: Event, pn: string) {
+  if (!part.value) return
+  onCellInput(e, part.value.scores, pn)
+}
+
+function pipClamp(pn: string) {
+  if (part.value) clampCell(part.value.scores, pn)
+}
+
+function pipEnter(e: KeyboardEvent) {
+  const ins = Array.from(pipHostRef.value?.querySelectorAll<HTMLInputElement>('.ph-in') ?? [])
+  const i = ins.indexOf(e.target as HTMLInputElement)
+  if (i >= 0 && i < ins.length - 1) {
+    ins[i + 1].focus()
+  } else {
+    next()
+    // 下一首后把焦点拉回置顶窗的第一个输入框（next 默认聚焦主页面表格）
+    nextTick(() => {
+      const el = pipHostRef.value?.querySelector<HTMLInputElement>('.ph-in')
+      el?.focus()
+      el?.select()
+    })
+  }
+}
+
+function pipSkipNext() {
+  toggleSkip()
+  next()
+}
+
+function copyStylesTo(pip: Window) {
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const text = Array.from(sheet.cssRules)
+        .map(r => r.cssText)
+        .join('')
+      if (!text) continue
+      const style = pip.document.createElement('style')
+      style.textContent = text
+      pip.document.head.appendChild(style)
+    } catch {
+      if (sheet.href) {
+        const link = pip.document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = sheet.href
+        pip.document.head.appendChild(link)
       }
     }
+  }
+  pip.document.title = '悬浮打分'
+}
+
+async function openPip() {
+  const dpip = (
+    window as unknown as {
+      documentPictureInPicture?: { requestWindow: (o: object) => Promise<Window> }
+    }
   ).documentPictureInPicture
-  if (dpip?.requestWindow) {
-    dpip
-      .requestWindow({ width: 380, height: 380 })
-      .then(w => {
-        w.location.href = url
-      })
-      .catch(() => window.open(url, 'oped-pip', 'width=380,height=400'))
-  } else {
-    window.open(url, 'oped-pip', 'width=380,height=400')
+  const popupUrl = `${location.origin}${location.pathname}#/pip/${sessionId}`
+  if (!dpip?.requestWindow) {
+    // 浏览器不支持 Document PiP：退化为普通小窗（不置顶但能用）
+    window.open(popupUrl, 'oped-pip', 'width=380,height=430')
+    return
+  }
+  if (pipWin && !pipWin.closed) {
+    pipWin.focus()
+    return
+  }
+  try {
+    const w = await dpip.requestWindow({ width: 400, height: 360 })
+    copyStylesTo(w)
+    const host = pipHostRef.value
+    if (host) {
+      w.document.body.append(host)
+      host.classList.add('in-pip')
+    }
+    w.document.body.style.cssText = 'margin:0;background:#16181d;color:#f2f3f5'
+    // 用户关掉 PiP 窗：把节点搬回主页面，方便下次再开
+    w.addEventListener('pagehide', () => {
+      const host = pipHostRef.value
+      if (host) {
+        document.body.append(host)
+        host.classList.remove('in-pip')
+      }
+      pipWin = null
+    })
+    pipWin = w
+    await nextTick()
+    w.document.querySelector<HTMLInputElement>('.ph-in')?.focus()
+  } catch {
+    window.open(popupUrl, 'oped-pip', 'width=380,height=430')
   }
 }
 
@@ -1493,6 +1612,55 @@ function fmtDur(sec: number) {
 .lyric-line { margin-bottom: 10px; }
 .lyric-line span { display: block; }
 .lyric-tr { color: #9499a0; font-size: 12.5px; margin-top: 2px; }
+
+/* ---------- 悬浮面板搬运节点（PiP） ---------- */
+.pip-host { display: none; }
+.pip-host.in-pip { display: block; }
+.ph-wrap { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.ph-song { line-height: 1.5; }
+.ph-kind {
+  font-size: 11px;
+  color: #fb7299;
+  border: 1px solid #fb7299;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+.ph-title { font-size: 17px; font-weight: 700; word-break: break-all; }
+.ph-meta { display: block; color: #8a919e; font-size: 12.5px; margin-top: 2px; }
+.ph-rows { display: flex; flex-direction: column; gap: 7px; }
+.ph-row { display: flex; align-items: center; gap: 9px; }
+.ph-name { width: 86px; flex-shrink: 0; font-size: 14.5px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ph-in {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid #3a4152;
+  border-radius: 9px;
+  background: #1d212b;
+  color: #f2f3f5;
+  font-size: 17px;
+  text-align: center;
+  outline: none;
+}
+.ph-in:focus { border-color: #fb7299; }
+.ph-fav { border: none; background: none; font-size: 22px; color: #4a5264; cursor: pointer; padding: 0 4px; }
+.ph-fav.on { color: #ffa940; }
+.ph-foot { display: flex; align-items: center; gap: 9px; margin-top: 2px; }
+.ph-btn {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 9px;
+  border: 1px solid #3a4152;
+  background: #1d212b;
+  color: #cfd4de;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.ph-btn.primary { background: #fb7299; border-color: #fb7299; color: #fff; font-weight: 600; }
+.ph-pos { margin-left: auto; color: #8a919e; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ph-hint { margin: 0; color: #5a6275; font-size: 11.5px; }
 
 .extra { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 
