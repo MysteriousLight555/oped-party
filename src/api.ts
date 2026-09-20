@@ -1,4 +1,4 @@
-import type { AiConfigInfo, AiReview, Config, Session, SessionMeta } from './types'
+import type { AiConfigInfo, AiReview, Config, NcmSong, Session, SessionMeta } from './types'
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch('/api' + url, {
@@ -72,7 +72,22 @@ export const api = {
   }) => req<AiConfigInfo>('/ai/config', { method: 'PUT', body: JSON.stringify(body) }),
   testAi: () => req<{ ok: boolean; reply: string }>('/ai/test', { method: 'POST' }),
   aiReview: (id: string) =>
-    req<{ review: AiReview; total: number }>(`/sessions/${id}/ai-review`, { method: 'POST' })
+    req<{ review: AiReview; total: number }>(`/sessions/${id}/ai-review`, { method: 'POST' }),
+
+  ncmStatus: () =>
+    req<{ installed: boolean; appId: boolean; privateKey: boolean; player: string; mpv: boolean }>(
+      '/ncm/status'
+    ),
+  ncmMatch: (sessionId: string, page: number) =>
+    req<NcmSong>('/ncm/match', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, page })
+    }),
+  ncmPlay: (sessionId: string, page: number) =>
+    req<{ started: boolean }>('/ncm/play', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, page })
+    })
 }
 
 export function download(url: string) {

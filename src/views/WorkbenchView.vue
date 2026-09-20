@@ -10,6 +10,13 @@
         </span>
       </div>
       <el-button @click="openPip" title="置顶小窗，全屏看视频时也能打分">📺 悬浮面板</el-button>
+      <el-button
+        @click="ncmBatch"
+        :loading="ncmBatching"
+        :title="`把未关联网易云的分P批量匹配（剩余 ${ncmUnmatchedCount} 首）`"
+      >
+        🎵 匹配网易云<template v-if="ncmUnmatchedCount">（{{ ncmUnmatchedCount }}）</template>
+      </el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
       <el-button
         type="warning"
@@ -94,6 +101,33 @@
           <div class="sh-actions">
             <el-button size="small" @click="openEdit">修正信息</el-button>
             <el-button size="small" :disabled="!session.bvid" @click="openBili">B站 ↗</el-button>
+            <el-button
+              size="small"
+              :loading="ncmMatching"
+              @click="ncmMatch"
+              :title="part.ncm ? `已匹配：${part.ncm.name}` : '搜索网易云曲库并关联'"
+            >
+              {{ part.ncm ? '🎵 已关联' : '🎵 关联网易云' }}
+            </el-button>
+            <el-button
+              v-if="part.ncm?.id"
+              size="small"
+              type="success"
+              plain
+              @click="ncmOpenPage"
+              title="在网易云音乐网页版打开"
+              >试听 ↗</el-button
+            >
+            <el-button
+              v-if="part.ncm?.id && ncmStatus?.player"
+              size="small"
+              type="success"
+              plain
+              :loading="ncmPlaying"
+              @click="ncmPlay"
+              title="用本机播放器（mpv）播放这首歌"
+              >▶ 本机</el-button
+            >
             <el-button size="small" @click="toggleSkip">
               {{ part.skipped ? '取消跳过' : '跳过' }}
             </el-button>
@@ -666,6 +700,101 @@ function openBili() {
       '_blank'
     )
   }
+}
+
+// ---------- 网易云音乐 ----------
+const ncmStatus = ref<{ player: string; privateKey: boolean } | null>(null)
+const ncmMatching = ref(false)
+const ncmPlaying = ref(false)
+const ncmBatching = ref(false)
+const ncmUnmatchedCount = computed(
+  () => (session.value?.parts || []).filter(p => !p.skipped && !p.ncm).length
+)
+
+onMounted(async () => {
+  try {
+    ncmStatus.value = await api.ncmStatus()
+  } catch {
+    /* CLI 未装等情况，按钮点击时再提示 */
+  }
+})
+
+async function ncmGuardReady(): Promise<boolean> {
+  if (!ncmStatus.value?.privateKey) {
+    try {
+      ncmStatus.value = await api.ncmStatus()
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!ncmStatus.value?.privateKey) {
+    ElMessage.warning(
+      '网易云未配置私钥：先在项目目录运行 npx @music163/ncm-cli config set privateKey <私钥内容>'
+    )
+    return false
+  }
+  return true
+}
+
+async function ncmMatch() {
+  if (!(await ncmGuardReady()) || !part.value) return
+  ncmMatching.value = true
+  try {
+    const r = await api.ncmMatch(sessionId, part.value.page)
+    if (part.value) part.value.ncm = r as Part['ncm']
+    ElMessage.success(`已关联网易云：「${r.name}」${r.artist ? ` - ${r.artist}` : ''}`)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmMatching.value = false
+  }
+}
+
+function ncmOpenPage() {
+  if (part.value?.ncm?.id) {
+    window.open(`https://music.163.com/#/song?id=${part.value.ncm.id}`, '_blank')
+  }
+}
+
+async function ncmPlay() {
+  if (!part.value?.ncm) return
+  ncmPlaying.value = true
+  try {
+    await api.ncmPlay(sessionId, part.value.page)
+    ElMessage.info(`本机播放中：「${part.value.ncm.name}」`)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmPlaying.value = false
+  }
+}
+
+async function ncmBatch() {
+  if (!(await ncmGuardReady()) || !session.value) return
+  const targets = session.value.parts.filter(p => !p.skipped && !p.ncm)
+  if (!targets.length) {
+    ElMessage.info('全部分 P 都已关联过网易云')
+    return
+  }
+  ncmBatching.value = true
+  let okCount = 0
+  let failCount = 0
+  try {
+    for (const p of targets) {
+      try {
+        const r = await api.ncmMatch(sessionId, p.page)
+        p.ncm = r as Part['ncm']
+        okCount++
+      } catch {
+        failCount++
+      }
+    }
+  } finally {
+    ncmBatching.value = false
+  }
+  const msg = `批量匹配完成：成功 ${okCount}，失败 ${failCount}`
+  if (failCount) ElMessage.warning(msg)
+  else ElMessage.success(msg)
 }
 function openEdit() {
   if (!part.value) return

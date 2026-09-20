@@ -25,6 +25,17 @@ export interface Part {
   /** 全场短评 */
   comment: string
   skipped: boolean
+  /** 网易云音乐关联（官方 CLI 匹配结果缓存） */
+  ncm?: NcmSong
+}
+
+export interface NcmSong {
+  id: string
+  encryptedId?: string
+  name: string
+  artist?: string
+  keyword?: string
+  matchedAt?: string
 }
 
 export interface Session {
