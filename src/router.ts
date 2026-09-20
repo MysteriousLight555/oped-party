@@ -24,6 +24,12 @@ const router = createRouter({
       name: 'sheet',
       component: () => import('./views/SheetView.vue')
     },
+    {
+      // 手机扫码入口：自动跳最新一期的打分页（配对过的人免选名字）
+      path: '/join',
+      name: 'join',
+      component: () => import('./views/JoinView.vue')
+    },
     { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue') }
   ]
 })

@@ -146,7 +146,18 @@ onMounted(async () => {
   }
   session.value = s
   cfg.value = c
-  personSel.value = localStorage.getItem(`sheet-person-${sessionId}`) || ''
+  // 配对：优先本期的记忆，没有则带上次的身份（跨期免选）
+  const saved =
+    localStorage.getItem(`sheet-person-${sessionId}`) ||
+    localStorage.getItem('sheet-person-global') ||
+    ''
+  if (saved) {
+    if (c.persons.includes(saved)) personSel.value = saved
+    else {
+      personCustom.value = saved
+      personSel.value = '__custom__'
+    }
+  }
 })
 
 async function guard(): Promise<boolean> {
@@ -154,7 +165,9 @@ async function guard(): Promise<boolean> {
     ElMessage.warning('先选择你是谁')
     return false
   }
-  localStorage.setItem(`sheet-person-${sessionId}`, personSel.value)
+  // 记住身份：本期精确记忆 + 全局配对（下次开新的一期也自动带上）
+  localStorage.setItem(`sheet-person-${sessionId}`, me.value)
+  localStorage.setItem('sheet-person-global', me.value)
   return true
 }
 
