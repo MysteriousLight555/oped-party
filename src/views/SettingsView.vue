@@ -182,15 +182,27 @@
       </div>
       <div class="ncm-row">
         <span>同步目标歌单：</span>
-        <el-input
+        <el-select
           v-model="ncmPlaylistId"
-          placeholder="歌单的明文数字 ID（网易云 App 里分享歌单，链接里 playlist?id= 后面的数字）"
+          filterable
+          placeholder="点右侧「获取我的歌单」选择，或直接填歌单加密 ID"
           style="width: 340px"
           size="small"
-        />
-        <el-button size="small" :loading="ncmPlSaving" @click="ncmSavePlaylist">保存</el-button>
-        <span class="hint" style="margin: 0">「★ 同步到歌单」会把全场收藏的歌批量加进去</span>
+          :loading="ncmPlLoading"
+        >
+          <el-option
+            v-for="p in ncmPlaylists"
+            :key="p.id"
+            :value="p.id"
+            :label="p.isHeart ? `${p.name}（红心歌单，不建议）` : `${p.name}（${p.trackCount} 首）`"
+          />
+        </el-select>
+        <el-button size="small" :loading="ncmPlLoading" @click="ncmLoadPlaylists">获取我的歌单</el-button>
+        <el-button size="small" :loading="ncmPlSaving" :disabled="!ncmPlaylistId" @click="ncmSavePlaylist">保存</el-button>
       </div>
+      <p class="hint" style="margin: 0 0 4px">
+        也可在网易云 App 建一个新歌单再点「获取我的歌单」刷新选择。「★ 同步到歌单」会把全场收藏的歌批量加进去。
+      </p>
     </el-card>
 
     <el-card shadow="never">
@@ -307,6 +319,20 @@ const ncmLogin = ref<{ qrUrl: string; uniKey: string; status: number; polling: b
 })
 const ncmPlaylistId = ref('')
 const ncmPlSaving = ref(false)
+const ncmPlLoading = ref(false)
+const ncmPlaylists = ref<Array<{ id: string; name: string; trackCount: number; isHeart: boolean }>>([])
+
+async function ncmLoadPlaylists() {
+  ncmPlLoading.value = true
+  try {
+    ncmPlaylists.value = await api.ncmPlaylists()
+    if (!ncmPlaylists.value.length) ElMessage.info('没有查到歌单')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmPlLoading.value = false
+  }
+}
 
 onMounted(async () => {
   try {

@@ -244,6 +244,49 @@ export async function matchPart(auth, part) {
 // ---------- 收藏同步：批量添加到歌单 ----------
 const BATCH_LIKE_PATH = '/openapi/music/basic/playlist/song/batch/like'
 const BATCH_SIZE = 50
+const HEART_PATH = '/openapi/music/basic/playlist/song/like/v2'
+const PLAYLIST_CREATED_PATH = '/openapi/music/basic/playlist/created/get/v2'
+
+/** 红心/取消红心一首歌（songId 为加密 ID）。返回 {ok, paid?} */
+export async function heartSong(auth, encryptedId, isLike = true) {
+  const token = validUserToken(auth)
+  if (!token) return { ok: false, error: '登录已过期，请重新扫码' }
+  const r = await signedCall(auth, 'GET', HEART_PATH, { songId: encryptedId, isLike }, token)
+  const j = r.json
+  if (j?.code === 200) return { ok: true }
+  const msg = j?.message || j?.msg || JSON.stringify(j).slice(0, 120)
+  const paid = /购买|songfee|付费/i.test(msg)
+  return { ok: false, error: msg, paid }
+}
+
+/** 用户创建的歌单列表（含末尾的红心歌单，specialType=5） */
+export async function listCreatedPlaylists(auth) {
+  const token = validUserToken(auth)
+  if (!token) return { ok: false, error: '登录已过期，请重新扫码' }
+  const out = []
+  let offset = 0
+  for (let page = 0; page < 5; page++) {
+    const r = await signedCall(auth, 'GET', PLAYLIST_CREATED_PATH, { limit: 500, offset }, token)
+    const records = r.json?.data?.records
+    if (!Array.isArray(records)) {
+      if (page === 0) return { ok: false, error: r.json?.message || '获取歌单列表失败' }
+      break
+    }
+    for (const p of records) {
+      out.push({
+        id: p.id,
+        name: p.name || '',
+        trackCount: p.trackCount || 0,
+        specialType: p.specialType || 0,
+        isHeart: p.specialType === 5
+      })
+    }
+    const total = r.json?.data?.recordCount ?? out.length
+    offset += records.length
+    if (offset >= total || !records.length) break
+  }
+  return { ok: true, playlists: out }
+}
 
 /**
  * 把加密 ID 列表分批加入歌单（须是自己的歌单）。

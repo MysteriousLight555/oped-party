@@ -18,6 +18,13 @@
         🎵 匹配网易云<template v-if="ncmUnmatchedCount">（{{ ncmUnmatchedCount }}）</template>
       </el-button>
       <el-button
+        @click="ncmHeartFav"
+        :loading="ncmHearting"
+        title="把全场★收藏且已匹配网易云的歌加红心（网易云「喜欢的音乐」）"
+      >
+        ❤ 同步红心
+      </el-button>
+      <el-button
         @click="ncmSyncFav"
         :loading="ncmSyncing"
         title="把全场★收藏且已匹配网易云的歌批量加入目标歌单（设置页配置歌单 ID）"
@@ -821,6 +828,27 @@ async function ncmSyncFav() {
     ElMessage.error((e as Error).message)
   } finally {
     ncmSyncing.value = false
+  }
+}
+
+const ncmHearting = ref(false)
+async function ncmHeartFav() {
+  if (!(await ncmGuardReady()) || !session.value) return
+  ncmHearting.value = true
+  try {
+    const r = await api.ncmHeartFavorites(sessionId)
+    let msg = `红心同步完成：成功 ${r.hearted}/${r.songs}`
+    if (r.paidSkipped) msg += `，付费歌曲跳过 ${r.paidSkipped}`
+    if (r.failed.length) {
+      ElMessage.warning(msg + `，失败 ${r.failed.length}`)
+      console.warn('红心失败详情', r.failed)
+    } else {
+      ElMessage.success(msg + '，去网易云「喜欢的音乐」看看吧')
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmHearting.value = false
   }
 }
 function openEdit() {

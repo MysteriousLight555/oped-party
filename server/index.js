@@ -29,7 +29,9 @@ import {
   loadAuth,
   saveAuthPatch,
   searchKeyword,
-  syncToPlaylist
+  syncToPlaylist,
+  heartSong,
+  listCreatedPlaylists
 } from './ncm.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -485,6 +487,38 @@ app.post('/api/ncm/sync-favorites', async (req, res) => {
     added: r.added,
     duplicate: r.duplicate
   })
+})
+
+// 用户创建的歌单列表（设置页选择目标歌单用）
+app.get('/api/ncm/playlists', async (req, res) => {
+  const r = await listCreatedPlaylists(loadAuth())
+  if (!r.ok) return res.status(502).json({ error: r.error })
+  ok(res).json(r.playlists)
+})
+
+// 红心同步：当期所有被★收藏（且已匹配）的歌加红心
+app.post('/api/ncm/heart-favorites', async (req, res) => {
+  const { sessionId } = req.body || {}
+  const s = getSession(sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const auth = loadAuth()
+  if (!auth.userToken) return res.status(401).json({ error: '网易云登录已过期，请重新扫码' })
+
+  const favParts = (s.parts || []).filter(p => !p.skipped && p.favorites?.length && p.ncm?.encryptedId)
+  if (!favParts.length) {
+    return res.status(400).json({ error: '没有可同步的收藏（需要既被★收藏、又已🎵匹配网易云的歌）' })
+  }
+  const ids = [...new Set(favParts.map(p => p.ncm.encryptedId))]
+  let hearted = 0
+  const failed = []
+  const paidSkipped = []
+  for (const id of ids) {
+    const r = await heartSong(auth, id, true)
+    if (r.ok) hearted++
+    else if (r.paid) paidSkipped.push(id)
+    else failed.push({ id, error: r.error })
+  }
+  ok(res).json({ songs: ids.length, hearted, paidSkipped: paidSkipped.length, failed })
 })
 
 // ---------- 前端静态资源 ----------

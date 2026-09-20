@@ -101,6 +101,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sessionId })
     }),
+  ncmHeartFavorites: (sessionId: string) =>
+    req<{ songs: number; hearted: number; paidSkipped: number; failed: Array<{ id: string; error: string }> }>(
+      '/ncm/heart-favorites',
+      { method: 'POST', body: JSON.stringify({ sessionId }) }
+    ),
+  ncmPlaylists: () =>
+    req<Array<{ id: string; name: string; trackCount: number; isHeart: boolean }>>('/ncm/playlists'),
   ncmPlay: (sessionId: string, page: number) =>
     req<{ started: boolean }>('/ncm/play', {
       method: 'POST',
