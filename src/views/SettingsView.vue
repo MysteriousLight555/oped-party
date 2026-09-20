@@ -180,6 +180,17 @@
           npx @music163/ncm-cli login。
         </span>
       </div>
+      <div class="ncm-row">
+        <span>同步目标歌单：</span>
+        <el-input
+          v-model="ncmPlaylistId"
+          placeholder="歌单的明文数字 ID（网易云 App 里分享歌单，链接里 playlist?id= 后面的数字）"
+          style="width: 340px"
+          size="small"
+        />
+        <el-button size="small" :loading="ncmPlSaving" @click="ncmSavePlaylist">保存</el-button>
+        <span class="hint" style="margin: 0">「★ 同步到歌单」会把全场收藏的歌批量加进去</span>
+      </div>
     </el-card>
 
     <el-card shadow="never">
@@ -294,6 +305,8 @@ const ncmLogin = ref<{ qrUrl: string; uniKey: string; status: number; polling: b
   status: 0,
   polling: false
 })
+const ncmPlaylistId = ref('')
+const ncmPlSaving = ref(false)
 
 onMounted(async () => {
   try {
@@ -301,7 +314,28 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  try {
+    ncmPlaylistId.value = (await api.ncmGetPlaylist()).playlistId
+  } catch {
+    /* ignore */
+  }
 })
+
+async function ncmSavePlaylist() {
+  if (!ncmPlaylistId.value.trim()) {
+    ElMessage.warning('先粘贴歌单 ID')
+    return
+  }
+  ncmPlSaving.value = true
+  try {
+    await api.ncmSetPlaylist(ncmPlaylistId.value.trim())
+    ElMessage.success('目标歌单已保存')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmPlSaving.value = false
+  }
+}
 
 async function ncmStartLogin() {
   try {

@@ -41,6 +41,8 @@ function saveAuthPatch(patch) {
   return auth
 }
 
+export { saveAuthPatch }
+
 function hasKey(auth) {
   return Boolean(auth.appId && auth.privateKey)
 }
@@ -237,6 +239,48 @@ export async function matchPart(auth, part) {
   const song = r.songs[0]
   if (!song) return { ok: false, error: '没有搜索结果' }
   return { ok: true, song, keyword }
+}
+
+// ---------- 收藏同步：批量添加到歌单 ----------
+const BATCH_LIKE_PATH = '/openapi/music/basic/playlist/song/batch/like'
+const BATCH_SIZE = 50
+
+/**
+ * 把加密 ID 列表分批加入歌单（须是自己的歌单）。
+ * 返回 {added, duplicate, results:[{ids, data}]}
+ */
+export async function syncToPlaylist(auth, playlistId, encryptedIds) {
+  const token = validUserToken(auth)
+  if (!token) return { ok: false, error: '登录已过期，请重新扫码' }
+  let added = 0
+  let duplicate = 0
+  const results = []
+  for (let i = 0; i < encryptedIds.length; i += BATCH_SIZE) {
+    const chunk = encryptedIds.slice(i, i + BATCH_SIZE)
+    const r = await signedCall(auth, 'GET', BATCH_LIKE_PATH, { playlistId, songIdList: chunk }, token)
+    const j = r.json
+    if (j?.code !== 200 && j?.code !== undefined && j?.data !== true && !Array.isArray(j?.data)) {
+      return {
+        ok: false,
+        error: `批量添加失败：${j?.message || j?.msg || JSON.stringify(j).slice(0, 120)}`,
+        partial: { added, duplicate }
+      }
+    }
+    // data:true = 全部成功；data:[] = 全部重复；其他数组 = 部分结果
+    if (j?.data === true) {
+      added += chunk.length
+    } else if (Array.isArray(j?.data)) {
+      if (!j.data.length) duplicate += chunk.length
+      else {
+        added += j.data.length
+        duplicate += chunk.length - j.data.length
+      }
+    } else {
+      added += chunk.length
+    }
+    results.push({ ids: chunk.length, data: j?.data })
+  }
+  return { ok: true, added, duplicate, results }
 }
 
 // ---------- CLI 播放（可选能力：需用户另行 ncm-cli login + 安装 mpv） ----------

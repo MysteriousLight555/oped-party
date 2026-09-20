@@ -20,7 +20,17 @@ import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
 import { renderSheetHtml } from './sheet.js'
 import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection } from './ai.js'
-import { ncmStatus, matchPart, playSong, qrCreate, qrPoll, loadAuth, searchKeyword } from './ncm.js'
+import {
+  ncmStatus,
+  matchPart,
+  playSong,
+  qrCreate,
+  qrPoll,
+  loadAuth,
+  saveAuthPatch,
+  searchKeyword,
+  syncToPlaylist
+} from './ncm.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // 端口避开常见服务（4310 是 OpenTelemetry 默认端口，本机可能有采集端点占用 IPv6 侧）
@@ -436,6 +446,45 @@ app.post('/api/ncm/play', async (req, res) => {
   const r = await playSong(part)
   if (!r.ok) return res.status(502).json({ error: `播放失败：${r.error}` })
   ok(res).json({ started: true })
+})
+
+// ---------- 收藏同步到网易云歌单 ----------
+app.get('/api/ncm/playlist', (req, res) => {
+  ok(res).json({ playlistId: loadAuth().ncmPlaylistId || '' })
+})
+
+app.put('/api/ncm/playlist', (req, res) => {
+  const playlistId = String(req.body?.playlistId || '').trim()
+  if (!playlistId) return res.status(400).json({ error: 'playlistId 不能为空' })
+  saveAuthPatch({ ncmPlaylistId: playlistId })
+  ok(res).json({ playlistId })
+})
+
+// 把当期所有被★收藏（且已匹配网易云）的歌批量加入目标歌单
+app.post('/api/ncm/sync-favorites', async (req, res) => {
+  const { sessionId } = req.body || {}
+  const s = getSession(sessionId)
+  if (!s) return res.status(404).json({ error: '期次不存在' })
+  const auth = loadAuth()
+  const playlistId = auth.ncmPlaylistId
+  if (!playlistId) return res.status(400).json({ error: '未配置目标歌单 ID（设置页 → 网易云音乐）' })
+  if (!auth.userToken) return res.status(401).json({ error: '网易云登录已过期，请重新扫码' })
+
+  const favParts = (s.parts || []).filter(p => !p.skipped && p.favorites?.length && p.ncm?.encryptedId)
+  if (!favParts.length) {
+    return res.status(400).json({ error: '没有可同步的收藏（需要既被★收藏、又已🎵匹配网易云的歌）' })
+  }
+  const ids = [...new Set(favParts.map(p => p.ncm.encryptedId))]
+  const r = await syncToPlaylist(auth, playlistId, ids)
+  if (!r.ok) {
+    return res.status(502).json({ error: r.error, ...r.partial })
+  }
+  ok(res).json({
+    songs: ids.length,
+    parts: favParts.length,
+    added: r.added,
+    duplicate: r.duplicate
+  })
 })
 
 // ---------- 前端静态资源 ----------

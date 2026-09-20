@@ -90,6 +90,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sessionId, page })
     }),
+  ncmGetPlaylist: () => req<{ playlistId: string }>('/ncm/playlist'),
+  ncmSetPlaylist: (playlistId: string) =>
+    req<{ playlistId: string }>('/ncm/playlist', {
+      method: 'PUT',
+      body: JSON.stringify({ playlistId })
+    }),
+  ncmSyncFavorites: (sessionId: string) =>
+    req<{ songs: number; parts: number; added: number; duplicate: number }>('/ncm/sync-favorites', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId })
+    }),
   ncmPlay: (sessionId: string, page: number) =>
     req<{ started: boolean }>('/ncm/play', {
       method: 'POST',

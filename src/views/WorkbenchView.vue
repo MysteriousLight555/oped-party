@@ -17,6 +17,13 @@
       >
         🎵 匹配网易云<template v-if="ncmUnmatchedCount">（{{ ncmUnmatchedCount }}）</template>
       </el-button>
+      <el-button
+        @click="ncmSyncFav"
+        :loading="ncmSyncing"
+        title="把全场★收藏且已匹配网易云的歌批量加入目标歌单（设置页配置歌单 ID）"
+      >
+        ★ 同步到歌单
+      </el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
       <el-button
         type="warning"
@@ -799,6 +806,22 @@ async function ncmBatch() {
   const msg = `批量匹配完成：成功 ${okCount}，失败 ${failCount}`
   if (failCount) ElMessage.warning(msg)
   else ElMessage.success(msg)
+}
+
+const ncmSyncing = ref(false)
+async function ncmSyncFav() {
+  if (!(await ncmGuardReady()) || !session.value) return
+  ncmSyncing.value = true
+  try {
+    const r = await api.ncmSyncFavorites(sessionId)
+    ElMessage.success(
+      `同步完成：${r.songs} 首收藏歌（来自 ${r.parts} 个分 P）加入歌单，新增 ${r.added}、重复 ${r.duplicate}`
+    )
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    ncmSyncing.value = false
+  }
 }
 function openEdit() {
   if (!part.value) return
