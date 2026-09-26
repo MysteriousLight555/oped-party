@@ -137,13 +137,18 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import { sessionConfig } from '../sessionConfig'
 import type { Config, Part, Session } from '../types'
 
 const route = useRoute()
 const sessionId = route.params.id as string
 
 const session = ref<Session | null>(null)
-const cfg = ref<Config | null>(null)
+const globalCfg = ref<Config | null>(null)
+// 在线打分页同样使用本期生效配置
+const cfg = computed<Config | null>(() =>
+  globalCfg.value ? sessionConfig(session.value, globalCfg.value) : null
+)
 const personSel = ref('')
 const personCustom = ref('')
 const filterText = ref('')
@@ -236,14 +241,14 @@ onMounted(async () => {
     p.dimScores = p.dimScores || {}
   }
   session.value = s
-  cfg.value = c
+  globalCfg.value = c
   // 配对：优先本期的记忆，没有则带上次的身份（跨期免选）
   const saved =
     localStorage.getItem(`sheet-person-${sessionId}`) ||
     localStorage.getItem('sheet-person-global') ||
     ''
   if (saved) {
-    if (c.persons.includes(saved)) personSel.value = saved
+    if (sessionConfig(s, c).persons.includes(saved)) personSel.value = saved
     else {
       personCustom.value = saved
       personSel.value = '__custom__'

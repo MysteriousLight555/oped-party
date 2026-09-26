@@ -108,6 +108,9 @@
                 <el-dropdown-item divided @click="toggleNoGlobal(s)">
                   {{ s.noGlobal ? '✓ 恢复计入全期总榜' : '不计入全期总榜' }}
                 </el-dropdown-item>
+                <el-dropdown-item divided @click="router.push(`/session/${s.id}/settings`)">
+                  ⚙ 本期设置
+                </el-dropdown-item>
                 <el-dropdown-item @click="rename(s)">重命名</el-dropdown-item>
                 <el-dropdown-item @click="toggleDone(s)">{{
                   s.done ? '标记为进行中' : '标记为已完成'

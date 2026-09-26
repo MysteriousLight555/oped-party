@@ -47,13 +47,18 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
+import { sessionConfig } from '../sessionConfig'
 import type { Config, Part, Session } from '../types'
 
 const route = useRoute()
 const sessionId = route.params.id as string
 
 const session = ref<Session | null>(null)
-const cfg = ref<Config | null>(null)
+const globalCfg = ref<Config | null>(null)
+// 悬浮面板同样使用本期生效配置
+const cfg = computed<Config | null>(() =>
+  globalCfg.value ? sessionConfig(session.value, globalCfg.value) : null
+)
 const currentIndex = ref(0)
 const matrixRef = ref<HTMLElement | null>(null)
 const saveStatus = ref<'saved' | 'saving' | 'error' | 'idle'>('idle')
@@ -81,7 +86,7 @@ const liveAvg = computed(() => {
 onMounted(async () => {
   const [s, c] = await Promise.all([api.getSession(sessionId), api.getConfig()])
   session.value = s
-  cfg.value = c
+  globalCfg.value = c
   const saved = localStorage.getItem(`pip-index-${sessionId}`)
   let i = saved ? Number(saved) : NaN
   if (!(i >= 0) || i >= s.parts.length) {

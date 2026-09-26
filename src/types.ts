@@ -78,10 +78,22 @@ export interface Session {
   createdAt: string
   done: boolean
   parts: Part[]
+  /** 本期快照设置：建期时从全局配置拷贝，之后与全局解耦，可按期单独调整 */
+  settings?: SessionSettings
+  /** 跟随全局：忽略快照，实时使用全局配置（存量期次无快照时等效于跟随全局） */
+  followGlobal?: boolean
   /** 轻量临时场：不计入全期总榜聚合 */
   noGlobal?: boolean
   /** AI 锐评（最新在前，最多存 5 条） */
   aiReviews?: AiReview[]
+}
+
+export interface SessionSettings {
+  persons: string[]
+  dimensions: Dim[]
+  tags: string[]
+  scoreMin: number
+  scoreMax: number
 }
 
 export interface AiReview {

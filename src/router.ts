@@ -10,6 +10,11 @@ const router = createRouter({
       component: () => import('./views/WorkbenchView.vue')
     },
     {
+      path: '/session/:id/settings',
+      name: 'session-settings',
+      component: () => import('./views/SessionSettingsView.vue')
+    },
+    {
       path: '/session/:id/pip',
       name: 'pip',
       component: () => import('./views/PipView.vue')

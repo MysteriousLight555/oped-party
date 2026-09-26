@@ -7,6 +7,8 @@
         <span class="wb-sub">
           已评 {{ votedCount }}/{{ totalActive }} ·
           <span :class="['sav', saveStatus]">{{ saveText }}</span>
+          <span v-if="session.followGlobal" class="cfgtag">跟随全局</span>
+          <span v-else-if="session.settings" class="cfgtag" title="参与人/维度/标签为本期独立快照，与全局解耦">本期独立配置</span>
         </span>
       </div>
       <el-button @click="openPip" title="置顶小窗，全屏看视频时也能打分">📺 悬浮面板</el-button>
@@ -40,6 +42,12 @@
         ↩ 撤销同步
       </el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
+      <el-button
+        @click="router.push(`/session/${sessionId}/settings`)"
+        title="本期的参与人 / 维度权重 / 标签 / 分值范围（快照，与全局解耦）"
+      >
+        ⚙ 本期设置
+      </el-button>
       <el-tooltip
         content="分P标题解析不理想时，把标题列表发给大模型批量补全（只补空字段，不覆盖已解析和人工修正的内容；需在设置页配 Key）"
         placement="bottom"
@@ -507,6 +515,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { sessionConfig } from '../sessionConfig'
 import { api, download } from '../api'
 import type { Config, NcmSong, Part, Session } from '../types'
 
@@ -515,7 +524,11 @@ const router = useRouter()
 const sessionId = route.params.id as string
 
 const session = ref<Session | null>(null)
-const cfg = ref<Config | null>(null)
+const globalCfg = ref<Config | null>(null)
+// 工作台全程使用"本期生效配置"（快照或跟随全局），不再直读全局
+const cfg = computed<Config | null>(() =>
+  globalCfg.value ? sessionConfig(session.value, globalCfg.value) : null
+)
 const currentIndex = ref(0)
 const filterText = ref('')
 const matrixRef = ref<HTMLElement | null>(null)
@@ -537,9 +550,9 @@ let saveTimer: number | undefined
 // ---------- 加载 ----------
 onMounted(async () => {
   const [s, c] = await Promise.all([api.getSession(sessionId), api.getConfig()])
-  normalize(s, c)
+  normalize(s, sessionConfig(s, c))
   session.value = s
-  cfg.value = c
+  globalCfg.value = c
   const firstTodo = s.parts.findIndex(p => !p.skipped && !hasScore(p))
   currentIndex.value = firstTodo >= 0 ? firstTodo : 0
   await nextTick()
@@ -647,25 +660,34 @@ function onPersonEnter(e: KeyboardEvent) {
 
 async function addPersonInline() {
   const name = personInline.value.trim()
-  if (!name || !cfg.value) return
-  if (cfg.value.persons.includes(name)) {
-    ElMessage.warning('已经有这个人了')
-    personInline.value = ''
-    return
-  }
-  cfg.value.persons.push(name)
+  if (!name || !session.value || !globalCfg.value) return
   personInline.value = ''
-  try {
-    cfg.value = await api.saveConfig(cfg.value)
-    ElMessage.success(`已加入 ${name}`)
-    await nextTick()
-    const inputs = matrixRef.value?.querySelectorAll<HTMLInputElement>('tbody .sin.total')
-    const last = inputs?.[inputs.length - 1]
-    last?.focus()
-    last?.select()
-  } catch (e) {
-    ElMessage.error(`保存失败：${(e as Error).message}`)
+  // 跟随全局（或存量无快照）→ 加进全局模板；有快照 → 加进本期名单（随本期自动保存）
+  if (session.value.followGlobal === true || !session.value.settings) {
+    if (globalCfg.value.persons.includes(name)) {
+      ElMessage.warning('已经有这个人了')
+      return
+    }
+    globalCfg.value.persons.push(name)
+    try {
+      globalCfg.value = await api.saveConfig(globalCfg.value)
+    } catch (e) {
+      ElMessage.error(`保存失败：${(e as Error).message}`)
+      return
+    }
+  } else {
+    if (session.value.settings.persons.includes(name)) {
+      ElMessage.warning('已经有这个人了')
+      return
+    }
+    session.value.settings.persons.push(name)
   }
+  ElMessage.success(`已加入 ${name}`)
+  await nextTick()
+  const inputs = matrixRef.value?.querySelectorAll<HTMLInputElement>('tbody .sin.total')
+  const last = inputs?.[inputs.length - 1]
+  last?.focus()
+  last?.select()
 }
 function statusOf(p: Part) {
   if (p.skipped) return 'skip'
@@ -1506,6 +1528,14 @@ function fmtDur(sec: number) {
 .wb-title { flex: 1; min-width: 200px; }
 .wb-title b { font-size: 18px; margin-right: 10px; }
 .wb-sub { color: #9499a0; font-size: 13px; }
+.cfgtag {
+  color: #9499a0;
+  border: 1px solid #e6e8ec;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+  margin-left: 8px;
+}
 .sav.error { color: #f56c6c; }
 .sav.saved { color: #67c23a; }
 
