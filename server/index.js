@@ -14,7 +14,7 @@ import {
 } from './store.js'
 import { fetchVideo, resolveBvid } from './bili.js'
 import { parseTitle, applyDescEnhance } from './parse.js'
-import { sessionStats, allStats } from './stats.js'
+import { sessionStats, allStats, sessionConfig } from './stats.js'
 import { renderSessionHtml, renderAllHtml } from './report-html.js'
 import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
@@ -118,6 +118,8 @@ app.post('/api/sessions', async (req, res) => {
     return res.status(502).json({ error: `拉取分P失败：${e.message}。可改用「手动粘贴列表」导入。` })
   }
 
+  // 建期即快照：把当前全局配置凝固成本期设置，之后与全局解耦（可在「本期设置」里单独调整）
+  const cfg = loadConfig()
   const session = {
     id: newSessionId(),
     name: String(body.name || '').trim() || source.videoTitle || '新的一期',
@@ -141,7 +143,15 @@ app.post('/api/sessions', async (req, res) => {
       comment: '',
       tags: [],
       skipped: false
-    }))
+    })),
+    settings: {
+      persons: [...cfg.persons],
+      dimensions: structuredClone(cfg.dimensions),
+      tags: [...cfg.tags],
+      scoreMin: cfg.scoreMin,
+      scoreMax: cfg.scoreMax
+    },
+    followGlobal: false
   }
   // 标题解析不理想时，用视频简介里的曲目单兜底（条目数与分P数一致才做位置对齐）
   const enhancedByDesc = applyDescEnhance(session.parts, source.desc)
@@ -161,6 +171,8 @@ app.get('/api/sessions', (req, res) => {
       createdAt: s.createdAt,
       done: s.done,
       noGlobal: !!s.noGlobal,
+      followGlobal: !!s.followGlobal,
+      hasSettings: !!s.settings,
       total: s.parts.length,
       voted: st.votedCount,
       skipped: st.skipped.length
@@ -210,7 +222,8 @@ function sendFile(res, { format, baseName, inline, content }) {
 app.get('/api/sessions/:id/report/:format', async (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
-  const config = loadConfig()
+  // 报告用本期生效配置（快照或跟随全局），旧期次的反差值不会被改全局追溯影响
+  const config = sessionConfig(session, loadConfig())
   const st = sessionStats(session, config)
   const { format } = req.params
   const inline = req.query.inline === '1'
@@ -320,7 +333,7 @@ app.put('/api/sessions/:id/part/:page', (req, res) => {
 app.get('/api/sessions/:id/sheet', (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
-  const html = renderSheetHtml(session, loadConfig())
+  const html = renderSheetHtml(session, sessionConfig(session, loadConfig()))
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
   res.setHeader(
     'Content-Disposition',
@@ -337,6 +350,8 @@ app.post('/api/sessions/:id/import', (req, res) => {
   const sheets = Array.isArray(body) ? body : Array.isArray(body.sheets) ? body.sheets : [body]
   const config = loadConfig()
   config.persons = config.persons || []
+  // 本期有快照且未跟随全局时，新成员先进本期名单（全局模板也同步，方便下期沿用）
+  const useSnapshot = s.followGlobal !== true && s.settings && Array.isArray(s.settings.dimensions)
   const added = []
   let total = 0
   let favTotal = 0
@@ -357,6 +372,10 @@ app.post('/api/sessions/:id/import', (req, res) => {
     if (!config.persons.includes(person)) {
       config.persons.push(person)
       added.push(person)
+    }
+    if (useSnapshot && !(s.settings.persons || []).includes(person)) {
+      s.settings.persons = s.settings.persons || []
+      s.settings.persons.push(person)
     }
     for (const [page, score] of Object.entries(sheet.scores || {})) {
       const part = s.parts.find(p => p.page === Number(page))
@@ -415,7 +434,7 @@ app.post('/api/ai/test', async (req, res) => {
 app.post('/api/sessions/:id/ai-review', async (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
-  const config = loadConfig()
+  const config = sessionConfig(session, loadConfig())
   const st = sessionStats(session, config)
   try {
     const text = await generateReview(session, st, config, loadAiConfig())

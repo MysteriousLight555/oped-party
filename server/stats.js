@@ -10,6 +10,24 @@ export function enabledDims(config) {
   return (config.dimensions || []).filter(d => d.enabled)
 }
 
+/**
+ * 解析"本期生效配置"：期次有快照且未开启跟随全局 → 用快照；
+ * 否则（含存量期次无快照）→ 用全局。与 src/sessionConfig.ts 保持一致。
+ */
+export function sessionConfig(session, config) {
+  const s = session?.settings
+  if (session?.followGlobal !== true && s && Array.isArray(s.dimensions) && s.dimensions.length) {
+    return {
+      persons: Array.isArray(s.persons) ? s.persons : config?.persons || [],
+      dimensions: s.dimensions,
+      tags: Array.isArray(s.tags) ? s.tags : config?.tags || [],
+      scoreMin: typeof s.scoreMin === 'number' ? s.scoreMin : config?.scoreMin ?? 1,
+      scoreMax: typeof s.scoreMax === 'number' ? s.scoreMax : config?.scoreMax ?? 10
+    }
+  }
+  return config
+}
+
 export function round1(x) {
   return x == null ? null : Math.round(x * 100) / 100
 }
@@ -130,6 +148,8 @@ export function tagEventsOf(part) {
 }
 
 export function sessionStats(session, config) {
+  // 每期用自己的快照配置算（维度/权重/分值范围），全局只对无快照的存量期次生效
+  config = sessionConfig(session, config)
   const parts = session.parts || []
   const active = parts
     .filter(p => !p.skipped)
