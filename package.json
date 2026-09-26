@@ -1,6 +1,6 @@
 {
   "name": "oped-party",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "description": "新番 OP/ED 鉴赏会打分工具（主观总评独立 + 反差/争议分析）",
