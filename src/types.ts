@@ -73,9 +73,13 @@ export interface Session {
   bvid: string
   videoTitle: string
   cover: string
+  /** B站视频简介：部分 UP 主会把曲目单写在这里，用于标题辅助解析 */
+  desc?: string
   createdAt: string
   done: boolean
   parts: Part[]
+  /** 轻量临时场：不计入全期总榜聚合 */
+  noGlobal?: boolean
   /** AI 锐评（最新在前，最多存 5 条） */
   aiReviews?: AiReview[]
 }
@@ -105,6 +109,7 @@ export interface SessionMeta {
   total: number
   voted: number
   skipped: number
+  noGlobal?: boolean
 }
 
 export interface Dim {

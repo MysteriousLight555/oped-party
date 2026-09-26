@@ -4,6 +4,7 @@ import type {
   Config,
   NcmLibStatus,
   NcmSong,
+  Parsed,
   Session,
   SessionMeta
 } from './types'
@@ -163,7 +164,11 @@ export const api = {
     req<{ configRestored: boolean; sessionsRestored: number }>('/restore', {
       method: 'POST',
       body: JSON.stringify(bundle)
-    })
+    }),
+
+  // AI 标题识别（分P标题批量结构化，只补空/弱字段）
+  aiParseTitles: (id: string) =>
+    req<{ applied: number; parts: Parsed[] }>(`/sessions/${id}/ai-parse`, { method: 'POST' })
 }
 
 export function download(url: string) {

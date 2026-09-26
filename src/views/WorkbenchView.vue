@@ -40,6 +40,12 @@
         ↩ 撤销同步
       </el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
+      <el-tooltip
+        content="分P标题解析不理想时，把标题列表发给大模型批量补全（只补空字段，不覆盖已解析和人工修正的内容；需在设置页配 Key）"
+        placement="bottom"
+      >
+        <el-button :loading="aiParseLoading" @click="aiParse">🤖 AI 识别标题</el-button>
+      </el-tooltip>
       <el-button
         type="warning"
         plain
@@ -75,7 +81,18 @@
     </div>
 
     <el-alert v-if="cfg.persons.length === 0" type="warning" show-icon :closable="false" class="mb12">
-      还没有参与人，先去<RouterLink to="/settings">设置页</RouterLink>添加，再回来打分。
+      <div class="ap-alert">
+        <span>
+          还没有参与人：输入名字回车即加，或去<RouterLink to="/settings">设置页</RouterLink>统一配置——
+        </span>
+        <input
+          v-model="personInline"
+          class="apin"
+          placeholder="名字，回车添加"
+          @keydown.enter="onPersonEnter"
+        />
+        <el-button size="small" type="primary" plain @click="addPersonInline">添加</el-button>
+      </div>
     </el-alert>
 
     <div class="wb-body" :class="{ noperson: cfg.persons.length === 0 }">
@@ -243,6 +260,16 @@
                   >
                     ★
                   </button>
+                </td>
+              </tr>
+              <tr class="aprow">
+                <td :colspan="2 + dims.length + 1">
+                  <input
+                    v-model="personInline"
+                    class="apin"
+                    placeholder="＋ 临时来了新朋友？输入名字，回车即加一行"
+                    @keydown.enter="onPersonEnter"
+                  />
                 </td>
               </tr>
             </tbody>
@@ -607,6 +634,38 @@ function setPersonComment(pn: string, v: string) {
   if (!part.value) return
   part.value.personComments = part.value.personComments || {}
   part.value.personComments[pn] = v
+}
+
+// ---------- 内联添加参与人（临时场景不用跑去设置页） ----------
+const personInline = ref('')
+
+function onPersonEnter(e: KeyboardEvent) {
+  if (e.isComposing) return // 中文输入法选词回车不触发
+  e.preventDefault()
+  addPersonInline()
+}
+
+async function addPersonInline() {
+  const name = personInline.value.trim()
+  if (!name || !cfg.value) return
+  if (cfg.value.persons.includes(name)) {
+    ElMessage.warning('已经有这个人了')
+    personInline.value = ''
+    return
+  }
+  cfg.value.persons.push(name)
+  personInline.value = ''
+  try {
+    cfg.value = await api.saveConfig(cfg.value)
+    ElMessage.success(`已加入 ${name}`)
+    await nextTick()
+    const inputs = matrixRef.value?.querySelectorAll<HTMLInputElement>('tbody .sin.total')
+    const last = inputs?.[inputs.length - 1]
+    last?.focus()
+    last?.select()
+  } catch (e) {
+    ElMessage.error(`保存失败：${(e as Error).message}`)
+  }
 }
 function statusOf(p: Part) {
   if (p.skipped) return 'skip'
@@ -979,6 +1038,28 @@ onMounted(() => {
     if (!document.hidden) refreshSilently()
   }, 8000)
 })
+
+// ---------- AI 标题识别（正则解析的兜底，只补空/弱字段） ----------
+const aiParseLoading = ref(false)
+
+async function aiParse() {
+  if (!session.value) return
+  aiParseLoading.value = true
+  try {
+    const r = await api.aiParseTitles(sessionId)
+    r.parts.forEach((parsed, i) => {
+      const p = session.value?.parts[i]
+      if (p) p.parsed = parsed
+    })
+    ElMessage.success(
+      r.applied > 0 ? `AI 已补全 ${r.applied} 个字段，可逐首「修正信息」复核` : '标题信息已经齐全，无需补全'
+    )
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    aiParseLoading.value = false
+  }
+}
 
 // ---------- AI 锐评（DeepSeek，按需触发） ----------
 const aiDlg = ref(false)
@@ -1595,6 +1676,33 @@ function fmtDur(sec: number) {
 }
 .favbtn:hover { transform: scale(1.15); }
 .favbtn.on { color: #f7a35c; }
+.aprow td { padding: 6px 8px 2px; }
+.apin {
+  width: 100%;
+  height: 30px;
+  border: 1px dashed #dcdfe6;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: #61666d;
+  outline: none;
+  background: #fafbfc;
+}
+.apin:focus {
+  border-color: #fb7299;
+  border-style: solid;
+  background: #fff;
+}
+.ap-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ap-alert .apin {
+  width: 180px;
+  background: #fff;
+}
 .hint { color: #9499a0; font-size: 12.5px; margin: 10px 0 0; }
 
 .quickrow {
