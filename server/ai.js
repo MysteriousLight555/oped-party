@@ -47,13 +47,22 @@ export function aiInfo(ai) {
   }
 }
 
-async function chat(ai, { system, user, timeoutMs = 180000 }) {
+async function chat(ai, { system, user, timeoutMs = 180000, jsonMode = false }) {
   if (!ai.apiKey) {
     throw new Error('尚未配置 API Key——请到「设置 → AI 分析」填写后再试')
   }
   const base = (ai.baseUrl || DEFAULT_AI.baseUrl).replace(/\/+$/, '')
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  const body = {
+    model: ai.model || DEFAULT_AI.model,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ],
+    stream: false
+  }
+  if (jsonMode) body.response_format = { type: 'json_object' }
   let res
   try {
     res = await fetch(base + '/chat/completions', {
@@ -62,14 +71,7 @@ async function chat(ai, { system, user, timeoutMs = 180000 }) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${ai.apiKey}`
       },
-      body: JSON.stringify({
-        model: ai.model || DEFAULT_AI.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user }
-        ],
-        stream: false
-      }),
+      body: JSON.stringify(body),
       signal: ctrl.signal
     })
   } catch (e) {
@@ -186,4 +188,58 @@ export async function testConnection(ai) {
     timeoutMs: 30000
   })
   return reply
+}
+
+// ---------- AI 标题识别：把分P标题批量结构化（正则解析的兜底） ----------
+
+function extractJson(text) {
+  const t = String(text)
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```\s*$/, '')
+    .trim()
+  try {
+    return JSON.parse(t)
+  } catch {
+    /* 继续尝试截取 */
+  }
+  const m = t.match(/\{[\s\S]*\}|\[[\s\S]*\]/)
+  if (m) {
+    try {
+      return JSON.parse(m[0])
+    } catch {
+      /* 放弃 */
+    }
+  }
+  throw new Error('模型没有返回可解析的 JSON，请重试')
+}
+
+const PARSE_SYSTEM = `你是B站动画音乐合集视频的分P标题解析器。对每个标题解析出四个字段：
+- kind：类型标记的原文，如 先行OP、正式ED2、OP、ED、插入曲、IN、主题曲、剧场版；标题里没有类型标记就给空字符串
+- anime：作品/番剧名；没有或不确定就给空字符串
+- song：曲名；解析不出就给整个标题
+- artist：歌手/组合；没有或不确定就给空字符串
+硬性规则：
+1. 不确定的信息一律留空字符串，严禁编造或猜测番剧名、歌手名
+2. 不要把视频标题、合集名、UP主名当成番剧名
+3. 歌手可能有多个（顿号/斜杠分隔），原样保留
+4. 只输出 JSON，格式 {"list":[{"page":1,"kind":"","anime":"","song":"","artist":""}...]}，list 的顺序和数量必须与输入标题一一对应`
+
+export async function aiParseTitles(ai, titles) {
+  const input = titles.map((t, i) => ({ page: i + 1, title: t }))
+  const content = await chat(ai, {
+    system: PARSE_SYSTEM,
+    user: `分P标题数组：\n${JSON.stringify(input)}\n\n请输出解析结果 JSON。`,
+    jsonMode: true
+  })
+  const data = extractJson(content)
+  const list = Array.isArray(data) ? data : data.list
+  if (!Array.isArray(list)) throw new Error('模型返回的 JSON 缺少 list 字段，请重试')
+  return list.map((e, i) => ({
+    page: i + 1,
+    kind: String(e?.kind || '').trim(),
+    anime: String(e?.anime || '').trim(),
+    song: String(e?.song || '').trim(),
+    artist: String(e?.artist || '').trim()
+  }))
 }

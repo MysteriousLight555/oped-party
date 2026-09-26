@@ -12,14 +12,14 @@ import {
   newSessionId,
   DATA_DIR
 } from './store.js'
-import { fetchVideo } from './bili.js'
-import { parseTitle } from './parse.js'
+import { fetchVideo, resolveBvid } from './bili.js'
+import { parseTitle, applyDescEnhance } from './parse.js'
 import { sessionStats, allStats } from './stats.js'
 import { renderSessionHtml, renderAllHtml } from './report-html.js'
 import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
 import { renderSheetHtml } from './sheet.js'
-import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection } from './ai.js'
+import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection, aiParseTitles } from './ai.js'
 import {
   ncmStatus,
   matchPart,
@@ -62,11 +62,12 @@ app.put('/api/config', (req, res) => {
 
 // ---------- B 站视频信息 ----------
 app.get('/api/bili/video', async (req, res) => {
-  const bvid = String(req.query.bvid || '').trim()
-  if (!/^BV[a-zA-Z0-9]{8,12}$/.test(bvid)) {
-    return res.status(400).json({ error: 'BV 号格式不正确' })
-  }
   try {
+    // 入参可以是 BV 号、含 BV 的分享文本或 b23.tv 短链
+    let bvid = await resolveBvid(String(req.query.bvid || '').trim())
+    if (!/^BV[a-zA-Z0-9]{8,12}$/.test(bvid)) {
+      return res.status(400).json({ error: 'BV 号格式不正确（支持 BV 号、分享文本、b23.tv 短链）' })
+    }
     const video = await fetchVideo(bvid, { refresh: req.query.refresh === '1' })
     ok(res).json(video)
   } catch (e) {
@@ -77,7 +78,7 @@ app.get('/api/bili/video', async (req, res) => {
 // ---------- 期次 ----------
 app.post('/api/sessions', async (req, res) => {
   const body = req.body || {}
-  let source = { videoTitle: '', cover: '', bvid: '', rawParts: [] }
+  let source = { videoTitle: '', cover: '', bvid: '', desc: '', rawParts: [] }
 
   try {
     if (body.mode === 'manual') {
@@ -87,15 +88,29 @@ app.post('/api/sessions', async (req, res) => {
       if (!lines.length) return res.status(400).json({ error: '粘贴的列表为空' })
       source = { videoTitle: String(body.manualTitle || '手动导入').trim(), cover: '', bvid: '', rawParts: lines.map((l, i) => ({ page: i + 1, cid: 0, part: l, duration: 0 })) }
     } else {
-      const bvid = String(body.bvid || '').trim()
-      if (!/^BV[a-zA-Z0-9]{8,12}$/.test(bvid)) {
-        return res.status(400).json({ error: 'BV 号格式不正确，形如 BV1bFTB6GEjW' })
+      // 入参兼容：纯 BV 号 / 含 BV 的分享文本 / b23.tv 短链
+      let bvid = String(body.bvid || '').trim()
+      if (!/(BV[a-zA-Z0-9]{8,12})/.test(bvid) && /b23\.tv/i.test(bvid)) {
+        try {
+          bvid = await resolveBvid(bvid)
+        } catch (e) {
+          return res.status(502).json({ error: `短链解析失败：${e.message}。可改用「手动粘贴列表」导入。` })
+        }
+        if (!bvid) {
+          return res.status(400).json({ error: '短链里没找到 BV 号，请确认链接有效，或改用「手动粘贴列表」导入' })
+        }
+      }
+      const m = bvid.match(/(BV[a-zA-Z0-9]{8,12})/)
+      bvid = m ? m[1] : ''
+      if (!bvid) {
+        return res.status(400).json({ error: 'BV 号格式不正确，形如 BV1bFTB6GEjW（也支持 b23.tv 短链）' })
       }
       const video = await fetchVideo(bvid, { refresh: body.refresh === true })
       source = {
         videoTitle: video.title,
         cover: video.cover,
         bvid,
+        desc: video.desc || '',
         rawParts: video.parts
       }
     }
@@ -109,6 +124,7 @@ app.post('/api/sessions', async (req, res) => {
     bvid: source.bvid,
     videoTitle: source.videoTitle,
     cover: source.cover,
+    desc: source.desc || '',
     createdAt: new Date().toISOString(),
     done: false,
     parts: source.rawParts.map(p => ({
@@ -127,8 +143,10 @@ app.post('/api/sessions', async (req, res) => {
       skipped: false
     }))
   }
+  // 标题解析不理想时，用视频简介里的曲目单兜底（条目数与分P数一致才做位置对齐）
+  const enhancedByDesc = applyDescEnhance(session.parts, source.desc)
   saveSession(session)
-  ok(res).json(session)
+  ok(res).json({ ...session, enhancedByDesc })
 })
 
 app.get('/api/sessions', (req, res) => {
@@ -142,6 +160,7 @@ app.get('/api/sessions', (req, res) => {
       videoTitle: s.videoTitle,
       createdAt: s.createdAt,
       done: s.done,
+      noGlobal: !!s.noGlobal,
       total: s.parts.length,
       voted: st.votedCount,
       skipped: st.skipped.length
@@ -209,8 +228,13 @@ app.get('/api/sessions/:id/report/:format', async (req, res) => {
 })
 
 app.get('/api/reports/all/:format', async (req, res) => {
-  const sessions = listSessions()
-  if (!sessions.length) return res.status(404).json({ error: '还没有任何期次' })
+  const all = listSessions()
+  if (!all.length) return res.status(404).json({ error: '还没有任何期次' })
+  // 「不计入全期总榜」的期次（轻量临时场）不参与跨期聚合
+  const sessions = all.filter(s => !s.noGlobal)
+  if (!sessions.length) {
+    return res.status(404).json({ error: '所有期次都设置了「不计入全期总榜」，没有可聚合的数据' })
+  }
   const config = loadConfig()
   const st = allStats(sessions, config)
   const { format } = req.params
@@ -749,6 +773,39 @@ app.post('/api/restore', (req, res) => {
     }
   }
   ok(res).json({ configRestored: true, sessionsRestored: n, sessionIds: ids })
+})
+
+// AI 标题识别：分P标题批量结构化，只补空/弱字段，不覆盖已解析和人工修正的信息
+app.post('/api/sessions/:id/ai-parse', async (req, res) => {
+  const session = getSession(req.params.id)
+  if (!session) return res.status(404).json({ error: '期次不存在' })
+  try {
+    const list = await aiParseTitles(loadAiConfig(), session.parts.map(p => p.title))
+    let applied = 0
+    session.parts.forEach((p, i) => {
+      const e = list[i]
+      if (!e) return
+      const cur = p.parsed
+      const next = { ...cur }
+      const fill = (key, val) => {
+        // song === title 说明正则没解析出来，视为弱字段允许补
+        const weak = key === 'song' ? !cur.song || cur.song === p.title : !cur[key]
+        if (val && weak && val !== p.title) {
+          next[key] = val
+          applied++
+        }
+      }
+      fill('kind', e.kind)
+      fill('anime', e.anime)
+      fill('song', e.song)
+      fill('artist', e.artist)
+      p.parsed = next
+    })
+    saveSession(session)
+    ok(res).json({ applied, parts: session.parts.map(p => p.parsed) })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
 })
 
 // ---------- 前端静态资源 ----------
