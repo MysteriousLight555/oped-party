@@ -43,15 +43,24 @@ const RULES = [
       artist: m[5].trim()
     })
   },
-  // 【小剧场ED】正后方的神威 —— 有【】类型但标题里没有「曲名」
+  // 【小剧场ED】正后方的神威 —— 有【】类型但标题里没有「曲名」；
+  // 余下部分若仍是完整条目（如【7月 续】桃源暗鬼 OP2【阿弥陀籤】超学生），递归解析后合并
   {
     re: /^【([^】]{1,12})】\s*(.+)$/,
-    pick: m => ({
-      kind: m[1].trim(),
-      anime: '',
-      song: m[2].trim(),
-      artist: ''
-    })
+    pick: m => {
+      const tag = m[1].trim()
+      const rest = m[2].trim()
+      const inner = parseTitle(rest)
+      if (inner.song && inner.song !== rest) {
+        return {
+          kind: [inner.kind, tag].filter(Boolean).join('·'),
+          anime: inner.anime,
+          song: inner.song,
+          artist: inner.artist
+        }
+      }
+      return { kind: tag, anime: '', song: rest, artist: '' }
+    }
   },
   // 番名「曲名」歌手（无类型前缀）
   {
@@ -61,6 +70,17 @@ const RULES = [
       anime: m[1].trim(),
       song: m[2].trim(),
       artist: m[3].trim()
+    })
+  },
+  // 番名 OP【曲名】歌手 / 番名 ED2【曲名】歌手（B站合集另一常见变体，如"新 猫眼三姐妹 ED【CAT'S EYE】Ado"）
+  // 放在「」规则之后：只有标题里完全没有「」时才启用，避免抢已有解析
+  {
+    re: /^(.{0,40}?)\s*(?:新\s+)?(OP|ED|OP\d{1,2}|ED\d{1,2}|插入曲|插入歌|IN|挿入歌)\s*【(.+?)】\s*(.*)$/,
+    pick: m => ({
+      kind: `${m[2]}`.trim(),
+      anime: m[1].trim(),
+      song: m[3].trim(),
+      artist: m[4].trim()
     })
   }
 ]
@@ -78,4 +98,35 @@ export function parseTitle(raw) {
     }
   }
   return { kind: '', anime: '', song: title, artist: '' }
+}
+
+/**
+ * 简介辅助解析：部分 UP 主把完整曲目单写在视频简介里。
+ * 仅当简介条目数与分P数完全一致时做位置对齐，且只补"弱解析"（正则完全没认出来的）分P，
+ * 不覆盖任何已有信息。返回补全的分P数。
+ */
+export function applyDescEnhance(parts, desc) {
+  if (!desc || !parts?.length) return 0
+  const lines = String(desc)
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+  if (lines.length !== parts.length) return 0
+  const entries = lines.map(l => parseTitle(l))
+  let applied = 0
+  parts.forEach((p, i) => {
+    const cur = p.parsed || {}
+    const e = entries[i]
+    const weak = !cur.kind && !cur.anime && (!cur.song || cur.song === p.title)
+    const strong = e.song && e.song !== lines[i] && (e.kind || e.anime || e.artist)
+    if (!weak || !strong) return
+    p.parsed = {
+      kind: cur.kind || e.kind,
+      anime: cur.anime || e.anime,
+      song: cur.song && cur.song !== p.title ? cur.song : e.song,
+      artist: cur.artist || e.artist
+    }
+    applied++
+  })
+  return applied
 }

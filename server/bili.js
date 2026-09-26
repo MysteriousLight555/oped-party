@@ -26,17 +26,47 @@ async function getJson(url) {
 }
 
 /**
+ * 从任意输入提取 BV 号：直接含 BV 的原样提取；
+ * b23.tv 短链跟随 302 跳转，从最终地址（或页面源码）里提取。
+ * 返回空串表示提取失败。
+ */
+export async function resolveBvid(raw) {
+  const direct = String(raw || '').match(/(BV[a-zA-Z0-9]{8,12})/)
+  if (direct) return direct[1]
+  const m = String(raw || '').match(/(?:https?:\/\/)?b23\.tv\/[A-Za-z0-9]+/i)
+  if (!m) return ''
+  const url = m[0].startsWith('http') ? m[0] : `https://${m[0]}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10000)
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { 'User-Agent': UA },
+      signal: controller.signal
+    })
+    const bv = (res.url || '').match(/(BV[a-zA-Z0-9]{8,12})/)
+    if (bv) return bv[1]
+    const body = await res.text().catch(() => '')
+    return (body.match(/BV[a-zA-Z0-9]{8,12}/) || [])[0] || ''
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
  * 拉取视频元信息 + 分P列表，结果按 bvid 缓存在 data/cache/。
- * view 接口拿标题/封面，失败时退回 pagelist（仅分P，无标题）。
+ * view 接口拿标题/封面/简介，失败时退回 pagelist（仅分P，无标题）。
  */
 export async function fetchVideo(bvid, { refresh = false } = {}) {
   const cachePath = path.join(CACHE.dir, `${bvid}.json`)
   if (!refresh && fs.existsSync(cachePath)) {
     const cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'))
-    if (cached.parts?.length) return cached
+    // 老缓存没有 desc 字段：重取一次，之后简介辅助解析才有原料
+    if (cached.parts?.length && typeof cached.desc === 'string') return cached
   }
 
-  let meta = { title: '', cover: '', owner: '' }
+  let meta = { title: '', cover: '', owner: '', desc: '' }
   let pages = null
 
   const view = await getJson(
@@ -46,7 +76,8 @@ export async function fetchVideo(bvid, { refresh = false } = {}) {
     meta = {
       title: view.data.title || '',
       cover: view.data.pic || '',
-      owner: view.data.owner?.name || ''
+      owner: view.data.owner?.name || '',
+      desc: view.data.desc || ''
     }
     pages = view.data.pages || null
   }
@@ -66,6 +97,7 @@ export async function fetchVideo(bvid, { refresh = false } = {}) {
     title: meta.title,
     cover: meta.cover,
     owner: meta.owner,
+    desc: meta.desc,
     parts: pages.map(p => ({
       page: p.page,
       cid: p.cid,
