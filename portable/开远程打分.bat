@@ -23,8 +23,10 @@ echo.
 echo ============================================================
 echo  Public tunnel starting. After it prints a line like
 echo     https://xxxx-yyyy-dddd.trycloudflare.com
-echo  send that URL to classmates (WeChat works).
-echo  Scoring page = that URL + /#/join
+echo  Open the local workbench and click Invite. Paste the
+echo  public URL into the root address field, then send the
+echo  invite link / QR code and room PIN to your friend.
+echo  Host pages require the management key from Settings.
 echo  Close this window to stop the tunnel.
 echo ============================================================
 echo.

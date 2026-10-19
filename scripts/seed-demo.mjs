@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 
 const BASE = process.env.BASE || 'http://127.0.0.1:18890'
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const OUT = path.join(ROOT, 'data', 'tmp-check')
+const OUT = path.join(process.env.OPED_DATA_DIR || path.join(ROOT, 'data'), 'tmp-check')
 fs.mkdirSync(OUT, { recursive: true })
 
 async function req(method, url, body) {
@@ -29,6 +29,26 @@ async function req(method, url, body) {
     return JSON.parse(text)
   } catch {
     return text
+  }
+}
+
+async function saveDemoSession(session) {
+  const ops = []
+  for (const p of session.parts) {
+    const page = p.page
+    for (const [person, value] of Object.entries(p.scores)) ops.push({ t: 'score', page, person, value })
+    for (const [dim, scores] of Object.entries(p.dimScores)) {
+      for (const [person, value] of Object.entries(scores)) ops.push({ t: 'dim', page, dim, person, value })
+    }
+    for (const [person, value] of Object.entries(p.personTags)) ops.push({ t: 'tags', page, person, value })
+    for (const [person, value] of Object.entries(p.personComments)) ops.push({ t: 'personComment', page, person, value })
+    for (const person of p.favorites) ops.push({ t: 'fav', page, person, value: true })
+    for (const field of ['parsed', 'comment', 'tags', 'skipped']) {
+      ops.push({ t: 'part', page, field, value: p[field] })
+    }
+  }
+  for (let i = 0; i < ops.length; i += 400) {
+    await req('PUT', `/api/sessions/${session.id}/patch`, { ops: ops.slice(i, i + 400) })
   }
 }
 
@@ -166,7 +186,7 @@ rest.slice(0, 8).forEach(p => {
   if (Math.random() < 0.5) p.personTags[persons[0]] = [config.tags[r(0, config.tags.length - 1)]]
 })
 
-await req('PUT', `/api/sessions/${s1.id}`, s1)
+await saveDemoSession(s1)
 console.log('期1 已注入四场景 + 常规评分')
 
 // 4. 第二期（手动导入，歌手与期1重叠，验证跨期去重）
@@ -199,7 +219,7 @@ s2.parts.forEach((p, i) => {
     p.personTags['阿伟'] = ['本格anisong']
   }
 })
-await req('PUT', `/api/sessions/${s2.id}`, s2)
+await saveDemoSession(s2)
 
 // 5. 期次列表
 const list = await req('GET', '/api/sessions')

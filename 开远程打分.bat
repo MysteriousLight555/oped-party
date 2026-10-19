@@ -39,9 +39,19 @@ if errorlevel 1 (
 echo.
 echo ============================================================
 echo  A temporary public URL is being created for this session.
-echo  Copy the  https://xxxx.trycloudflare.com  URL printed below
-echo  and send it to your group chat / meeting window.
-echo  Friends can open it and score directly in the browser.
+echo  Copy the  https://xxxx.trycloudflare.com  URL printed below.
+echo.
+echo  Next steps:
+echo    1. Open the host workbench on THIS computer (127.0.0.1).
+echo    2. Click "Invite" on the session, paste the public URL
+echo       into the "root address" field, then copy the invite
+echo       link / QR code and send it to your friend.
+echo    3. Friends open the invite link, pick a name, enter the
+echo       room PIN, and score on their phones.
+echo.
+echo  Do NOT send the bare public URL as an invite: it opens the
+echo  friend page, but the host pages need the room management
+echo  key (printed at startup / shown in Settings on this PC).
 echo.
 echo  IMPORTANT: the URL is public while this window is open.
 echo  Press Ctrl+C here right after the party to close it.
