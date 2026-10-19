@@ -6,6 +6,7 @@
 import { DATA_DIR, readJson, writeJson } from './store.js'
 import path from 'node:path'
 import { songTitle } from './stats.js'
+import { membersOf } from './party.js'
 
 const AI_PATH = path.join(DATA_DIR, 'ai.json')
 
@@ -112,7 +113,7 @@ const SYSTEM_PROMPT = `你是资深 Anisong（动画音乐）鉴赏沙龙的常�
 function buildReviewData(session, st, config, anonymize) {
   const nameMap = new Map()
   if (anonymize) {
-    ;(config.persons || []).forEach((p, i) => nameMap.set(p, `成员${String.fromCharCode(65 + i)}`))
+    membersOf(session, config).forEach((p, i) => nameMap.set(p, `成员${String.fromCharCode(65 + i)}`))
   }
   const nm = p => nameMap.get(p) || p
   const fmt = x => (x == null ? undefined : Math.round(x * 10) / 10)

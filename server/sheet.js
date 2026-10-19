@@ -1,4 +1,5 @@
 /** 离线个人打分单：单文件自包含 HTML，同学在自己电脑/手机上点分后导出 JSON 发回 */
+import { membersOf } from './party.js'
 
 function esc(s) {
   return String(s ?? '')
@@ -136,6 +137,7 @@ for (const p of S.parts) {
     inp.type = 'number'
     inp.min = S.scoreMin
     inp.max = S.scoreMax
+    inp.step = '0.5'
     inp.placeholder = S.scoreMin + '-' + S.scoreMax
     inp.oninput = () => {
       const v = Number(inp.value)
@@ -234,7 +236,7 @@ export function renderSheetHtml(session, config) {
     sessionName: session.name,
     scoreMin: config.scoreMin ?? 1,
     scoreMax: config.scoreMax ?? 10,
-    persons: config.persons || [],
+    persons: membersOf(session, config),
     tags: config.tags || [],
     parts: (session.parts || [])
       .filter(p => !p.skipped)

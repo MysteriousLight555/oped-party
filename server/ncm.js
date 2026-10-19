@@ -13,10 +13,9 @@
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { DATA_DIR } from './store.js'
 
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const AUTH_PATH = path.join(ROOT, 'data', 'ncm-auth.json')
+const AUTH_PATH = path.join(DATA_DIR, 'ncm-auth.json')
 
 const BASE = 'https://openncm.music.163.com'
 const SEARCH_PATH = '/openapi/music/basic/complex/search'
@@ -196,11 +195,15 @@ export async function ncmStatus() {
 import { spawn as _spawn } from 'node:child_process'
 function mpvCheck() {
   return new Promise(resolve => {
-    const w = _spawn('where', ['mpv'], { windowsHide: true })
-    let out = ''
-    w.stdout.on('data', d => (out += d))
-    w.on('close', code => resolve(code === 0 && out.trim().length > 0))
-    w.on('error', () => resolve(false))
+    try {
+      const w = _spawn('where', ['mpv'], { windowsHide: true })
+      let out = ''
+      w.stdout.on('data', d => (out += d))
+      w.on('close', code => resolve(code === 0 && out.trim().length > 0))
+      w.on('error', () => resolve(false))
+    } catch {
+      resolve(false)
+    }
   })
 }
 

@@ -3,3 +3,6 @@ dist/
 data/
 *.local
 build/
+
+.tmp-*/
+.npm-cache/

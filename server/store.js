@@ -3,7 +3,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-export const DATA_DIR = path.join(ROOT, 'data')
+// 数据目录默认 data/；测试或便携版可用 OPED_DATA_DIR 指到别处，避免污染真实数据
+export const DATA_DIR = process.env.OPED_DATA_DIR
+  ? path.resolve(process.env.OPED_DATA_DIR)
+  : path.join(ROOT, 'data')
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json')
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions')
 const CACHE_DIR = path.join(DATA_DIR, 'cache')
@@ -75,7 +78,9 @@ export const DEFAULT_CONFIG = {
 // 老配置兼容：补权重/说明；出厂旧三件套（编曲/vocal/画面）整体升级为沙龙三维度；
 // 标签库合并进沙隆推荐标签（tagsRev 标记只做一次，之后尊重用户增删）
 export function normalizeConfig(cfg) {
-  cfg.persons = Array.isArray(cfg.persons) ? cfg.persons : []
+  cfg.persons = Array.isArray(cfg.persons)
+    ? [...new Set(cfg.persons.map(p => String(p ?? '').trim()).filter(Boolean))]
+    : []
   cfg.dimensions = Array.isArray(cfg.dimensions) ? cfg.dimensions : []
   cfg.tags = Array.isArray(cfg.tags) ? cfg.tags : []
   const legacy = new Set(['arrange', 'vocal', 'visual'])
@@ -94,8 +99,10 @@ export function normalizeConfig(cfg) {
     for (const t of SALON_TAGS) if (!cfg.tags.includes(t)) cfg.tags.push(t)
     cfg.tagsRev = 2
   }
-  if (typeof cfg.scoreMin !== 'number') cfg.scoreMin = 1
-  if (typeof cfg.scoreMax !== 'number') cfg.scoreMax = 10
+  if (typeof cfg.scoreMin !== 'number' || !Number.isFinite(cfg.scoreMin)) cfg.scoreMin = 1
+  if (typeof cfg.scoreMax !== 'number' || !Number.isFinite(cfg.scoreMax)) cfg.scoreMax = 10
+  cfg.scoreMin = Math.min(99, Math.max(0, Math.round(cfg.scoreMin)))
+  cfg.scoreMax = Math.min(100, Math.max(cfg.scoreMin + 1, Math.round(cfg.scoreMax)))
   return cfg
 }
 
@@ -125,17 +132,33 @@ export function listSessions() {
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
 }
 
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,48}$/
+
 export function getSession(id) {
-  return readJson(path.join(SESSIONS_DIR, `${id}.json`), null)
+  const key = String(id || '')
+  if (!SESSION_ID_RE.test(key)) return null
+  return readJson(path.join(SESSIONS_DIR, `${key}.json`), null)
 }
 
-export function saveSession(session) {
-  writeJson(path.join(SESSIONS_DIR, `${session.id}.json`), session)
+/** 每次真实写入都推进版本号：客户端按字段合并时用它判断"期间有没有别人改过" */
+export function touchSession(session) {
+  session.rev = (Number(session.rev) || 0) + 1
+  session.updatedAt = new Date().toISOString()
+  return session
+}
+
+export function saveSession(session, { touch = true } = {}) {
+  const key = String(session?.id || '')
+  if (!SESSION_ID_RE.test(key)) throw new Error('非法的期次 ID')
+  if (touch) touchSession(session)
+  writeJson(path.join(SESSIONS_DIR, `${key}.json`), session)
   return session
 }
 
 export function deleteSession(id) {
-  const p = path.join(SESSIONS_DIR, `${id}.json`)
+  const key = String(id || '')
+  if (!SESSION_ID_RE.test(key)) return
+  const p = path.join(SESSIONS_DIR, `${key}.json`)
   if (fs.existsSync(p)) fs.unlinkSync(p)
 }
 

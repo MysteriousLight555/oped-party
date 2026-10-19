@@ -5,6 +5,7 @@
  * 反差值 Δ = 主观总评 − ref（正=情怀溢价，负=套路压分），允许并鼓励脱节。
  * 争议指数 = 一首歌所有人总分的标准差，用来一眼定位"吵得最凶"的曲子。
  */
+import { membersOf } from './party.js'
 
 export function enabledDims(config) {
   return (config.dimensions || []).filter(d => d.enabled)
@@ -57,8 +58,9 @@ export function refScoreOf(dimValues, dims) {
   return pairs.reduce((a, [v, w]) => a + v * (w / wsum), 0)
 }
 
-export function partStats(part, config) {
+export function partStats(part, config, members = []) {
   const dims = enabledDims(config)
+  const memberList = members || []
   const scoreEntries = Object.entries(part.scores || {}).filter(([, v]) => typeof v === 'number')
   const dimAvg = {}
   for (const d of dims) {
@@ -95,6 +97,7 @@ export function partStats(part, config) {
   const refAvg = round2(avgOf(refVals))
   const divAvg = refAvg != null ? round2(avgOf(bothScores) - refAvg) : null
   const std = round2(stdOf(scoreVals))
+  const missing = memberList.filter(who => typeof part.scores?.[who] !== 'number')
 
   return {
     avg: round1(avgOf(scoreEntries.map(([, v]) => v))),
@@ -106,7 +109,11 @@ export function partStats(part, config) {
     dims: dimAvg,
     favCount: (part.favorites || []).length,
     voters: scoreEntries.map(([who]) => who),
-    scored: scoreEntries.length > 0
+    scored: scoreEntries.length > 0,
+    memberCount: memberList.length,
+    submitted: memberList.length - missing.length,
+    missing,
+    complete: memberList.length > 0 && missing.length === 0
   }
 }
 
@@ -131,9 +138,10 @@ export function tagEventsOf(part) {
 
 export function sessionStats(session, config) {
   const parts = session.parts || []
+  const members = membersOf(session, config)
   const active = parts
     .filter(p => !p.skipped)
-    .map(p => ({ part: p, ...partStats(p, config) }))
+    .map(p => ({ part: p, ...partStats(p, config, members) }))
   const ranked = active
     .filter(r => r.scored)
     .sort((a, b) => b.avg - a.avg || b.favCount - a.favCount)
@@ -148,7 +156,7 @@ export function sessionStats(session, config) {
     }))
     .filter(b => b.top.length > 0)
 
-  const personTops = (config.persons || [])
+  const personTops = members
     .map(person => {
       const mine = ranked.filter(r => typeof r.part.scores?.[person] === 'number')
       return {
@@ -186,6 +194,16 @@ export function sessionStats(session, config) {
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 
+  const missingParts = active
+    .filter(r => !r.complete)
+    .map(r => ({
+      page: r.part.page,
+      song: songTitle(r.part),
+      missing: r.missing,
+      submitted: r.submitted,
+      memberCount: r.memberCount
+    }))
+
   return {
     ranked,
     unscored: active.filter(r => !r.scored),
@@ -199,7 +217,10 @@ export function sessionStats(session, config) {
     hotLine: hotThreshold(config),
     favorites: ranked.filter(r => r.favCount > 0).sort((a, b) => b.favCount - a.favCount),
     dims: enabledDims(config),
-    persons: config.persons || [],
+    members,
+    persons: members,
+    missingParts,
+    completeCount: active.filter(r => r.complete).length,
     votedCount: ranked.length,
     totalActive: active.length
   }
@@ -214,7 +235,9 @@ function normKey(s) {
 
 export function allStats(sessions, config) {
   const map = new Map()
+  const memberSet = new Set()
   for (const session of sessions) {
+    for (const m of membersOf(session, config)) memberSet.add(m)
     const st = sessionStats(session, config)
     for (const row of st.ranked) {
       const p = row.part
@@ -333,6 +356,6 @@ export function allStats(sessions, config) {
     hotLine,
     reviews,
     dims: enabledDims(config),
-    persons: config.persons || []
+    persons: [...memberSet]
   }
 }
