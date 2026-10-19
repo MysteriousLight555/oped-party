@@ -48,6 +48,7 @@ function load(relative, api = {}, extra = '') {
     if (name.endsWith('/api')) return { api, ApiError }
     if (name.endsWith('/session-sync')) return load('src/session-sync.ts')
     if (name.endsWith('/sheet-sync')) return load('src/sheet-sync.ts', api)
+    if (name.endsWith('/sessionConfig')) return load('src/sessionConfig.ts')
     if (name.endsWith('/auth')) return { auth: { host: false } }
     if (name.endsWith('.vue')) return {}
     throw new Error(`未提供测试依赖：${name}`)

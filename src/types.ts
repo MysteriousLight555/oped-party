@@ -73,6 +73,8 @@ export interface Session {
   bvid: string
   videoTitle: string
   cover: string
+  /** B站视频简介：部分 UP 主会把曲目单写在这里，用于标题辅助解析 */
+  desc?: string
   createdAt: string
   done: boolean
   /** 版本号：每次真实写入 +1，客户端按字段合并时用于识别"期间有人改过" */
@@ -92,6 +94,12 @@ export interface Session {
   /** 参与者视角：我是谁 */
   myPerson?: string
   parts: Part[]
+  /** 本期快照设置：建期时从全局配置拷贝，之后与全局解耦，可按期单独调整 */
+  settings?: SessionSettings
+  /** 跟随全局：忽略快照，实时使用全局配置（存量期次无快照时等效于跟随全局） */
+  followGlobal?: boolean
+  /** 轻量临时场：不计入全期总榜聚合 */
+  noGlobal?: boolean
   /** AI 锐评（最新在前，最多存 5 条） */
   aiReviews?: AiReview[]
 }
@@ -173,6 +181,14 @@ export interface JoinResult {
   session: Session
 }
 
+export interface SessionSettings {
+  persons: string[]
+  dimensions: Dim[]
+  tags: string[]
+  scoreMin: number
+  scoreMax: number
+}
+
 export interface AiReview {
   text: string
   model: string
@@ -201,6 +217,7 @@ export interface SessionMeta {
   /** 本场成员数 / 已评齐曲数（老后端可能没有） */
   members?: number
   complete?: number
+  noGlobal?: boolean
 }
 
 export interface Dim {

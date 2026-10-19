@@ -210,6 +210,7 @@ import {
   getParticipantToken
 } from '../auth'
 import { applyPatchBody, createSheetSaveQueue, type PatchBody } from '../sheet-sync'
+import { sessionConfig } from '../sessionConfig'
 import type { Config, Part, Session } from '../types'
 
 const route = useRoute()
@@ -217,7 +218,11 @@ const router = useRouter()
 const sessionId = route.params.id as string
 
 const session = ref<Session | null>(null)
-const cfg = ref<Config | null>(null)
+const globalCfg = ref<Config | null>(null)
+// 在线打分页同样使用本期生效配置
+const cfg = computed<Config | null>(() =>
+  globalCfg.value ? sessionConfig(session.value, globalCfg.value) : null
+)
 const personSel = ref('')
 const personCustom = ref('')
 const filterText = ref('')
@@ -398,7 +403,7 @@ onMounted(async () => {
       if (part) applyPatchBody(part, item.body)
     }
     session.value = s
-    cfg.value = c
+    globalCfg.value = c
     if (tokenPerson.value) {
       personSel.value = tokenPerson.value
     } else {

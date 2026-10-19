@@ -3,7 +3,11 @@
     <div class="head-row">
       <div>
         <h1 class="page-title">设置</h1>
-        <p class="page-sub">参与人、打分维度、标签库都在这里；改完记得保存。隐藏的维度不丢数据，随时可以再打开。</p>
+        <p class="page-sub">
+          参与人、打分维度、标签库都在这里；改完记得保存。隐藏的维度不丢数据，随时可以再打开。<br />
+          这是<b>全局默认模板</b>——新期次建期时会把当前值快照过去；某一期的差异化配置请在期次卡片的「⚙
+          本期设置」里调整，不会影响其他期。
+        </p>
       </div>
       <el-button type="primary" size="large" :loading="saving" @click="save">保存</el-button>
     </div>

@@ -12,6 +12,8 @@
             @click="retrySave"
             >{{ saveText }}</span
           >
+          <span v-if="session.followGlobal" class="cfgtag">跟随全局</span>
+          <span v-else-if="session.settings" class="cfgtag" title="参与人/维度/标签为本期独立快照，与全局解耦">本期独立配置</span>
         </span>
       </div>
       <el-button @click="openInvite" title="生成这一期的参与链接和二维码">📨 邀请</el-button>
@@ -47,6 +49,18 @@
         ↩ 撤销同步
       </el-button>
       <el-button @click="jumpNextPending">下一个待评 →</el-button>
+      <el-button
+        @click="router.push(`/session/${sessionId}/settings`)"
+        title="本期的参与人 / 维度权重 / 标签 / 分值范围（快照，与全局解耦）"
+      >
+        ⚙ 本期设置
+      </el-button>
+      <el-tooltip
+        content="分P标题解析不理想时，把标题列表发给大模型批量补全（只补空字段，不覆盖已解析和人工修正的内容；需在设置页配 Key）"
+        placement="bottom"
+      >
+        <el-button :loading="aiParseLoading" @click="aiParse">🤖 AI 识别标题</el-button>
+      </el-tooltip>
       <el-button
         type="warning"
         plain
@@ -274,6 +288,16 @@
                   >
                     ★
                   </button>
+                </td>
+              </tr>
+              <tr class="aprow">
+                <td :colspan="2 + dims.length + 1">
+                  <input
+                    v-model="personInline"
+                    class="apin"
+                    placeholder="＋ 临时来了新朋友？输入名字，回车即加一行"
+                    @keydown.enter="onPersonEnter"
+                  />
                 </td>
               </tr>
             </tbody>
@@ -566,6 +590,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, download, ApiError } from '../api'
 import InviteDialog from '../components/InviteDialog.vue'
 import { applySessionOps, cloneData, diffSession, sessionSnapshotsEqual } from '../session-sync'
+import { sessionConfig } from '../sessionConfig'
 import type { Config, NcmSong, Part, Session, StageState } from '../types'
 
 const route = useRoute()
@@ -573,7 +598,11 @@ const router = useRouter()
 const sessionId = route.params.id as string
 
 const session = ref<Session | null>(null)
-const cfg = ref<Config | null>(null)
+const globalCfg = ref<Config | null>(null)
+// 工作台全程使用"本期生效配置"（快照或跟随全局），不再直读全局
+const cfg = computed<Config | null>(() =>
+  globalCfg.value ? sessionConfig(session.value, globalCfg.value) : null
+)
 const currentIndex = ref(0)
 const filterText = ref('')
 const matrixRef = ref<HTMLElement | null>(null)
@@ -607,9 +636,9 @@ const isStageCurrent = computed(
 // ---------- 加载 ----------
 onMounted(async () => {
   const [s, c] = await Promise.all([api.getSession(sessionId), api.getConfig()])
-  normalize(s, c)
+  normalize(s, sessionConfig(s, c))
   session.value = s
-  cfg.value = c
+  globalCfg.value = c
   base = cloneData(s)
   baseRev = Number(s.rev) || 0
   const firstTodo = s.parts.findIndex(p => !p.skipped && !hasScore(p))
@@ -724,6 +753,47 @@ function setPersonComment(pn: string, v: string) {
   if (!part.value) return
   part.value.personComments = part.value.personComments || {}
   part.value.personComments[pn] = v
+}
+
+// ---------- 内联添加参与人（临时场景不用跑去设置页） ----------
+const personInline = ref('')
+
+function onPersonEnter(e: KeyboardEvent) {
+  if (e.isComposing) return // 中文输入法选词回车不触发
+  e.preventDefault()
+  addPersonInline()
+}
+
+async function addPersonInline() {
+  const name = personInline.value.trim()
+  if (!name || !session.value || !globalCfg.value) return
+  personInline.value = ''
+  // 跟随全局（或存量无快照）→ 加进全局模板；有快照 → 加进本期名单（随本期自动保存）
+  if (session.value.followGlobal === true || !session.value.settings) {
+    if (globalCfg.value.persons.includes(name)) {
+      ElMessage.warning('已经有这个人了')
+      return
+    }
+    globalCfg.value.persons.push(name)
+    try {
+      globalCfg.value = await api.saveConfig(globalCfg.value)
+    } catch (e) {
+      ElMessage.error(`保存失败：${(e as Error).message}`)
+      return
+    }
+  } else {
+    if (session.value.settings.persons.includes(name)) {
+      ElMessage.warning('已经有这个人了')
+      return
+    }
+    session.value.settings.persons.push(name)
+  }
+  ElMessage.success(`已加入 ${name}`)
+  await nextTick()
+  const inputs = matrixRef.value?.querySelectorAll<HTMLInputElement>('tbody .sin.total')
+  const last = inputs?.[inputs.length - 1]
+  last?.focus()
+  last?.select()
 }
 function statusOf(p: Part) {
   if (p.skipped) return 'skip'
@@ -1365,6 +1435,28 @@ onMounted(() => {
   }, 5000)
 })
 
+// ---------- AI 标题识别（正则解析的兜底，只补空/弱字段） ----------
+const aiParseLoading = ref(false)
+
+async function aiParse() {
+  if (!session.value) return
+  aiParseLoading.value = true
+  try {
+    const r = await api.aiParseTitles(sessionId)
+    r.parts.forEach((parsed, i) => {
+      const p = session.value?.parts[i]
+      if (p) p.parsed = parsed
+    })
+    ElMessage.success(
+      r.applied > 0 ? `AI 已补全 ${r.applied} 个字段，可逐首「修正信息」复核` : '标题信息已经齐全，无需补全'
+    )
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    aiParseLoading.value = false
+  }
+}
+
 // ---------- AI 锐评（DeepSeek，按需触发） ----------
 const aiDlg = ref(false)
 const aiLoading = ref(false)
@@ -1810,6 +1902,14 @@ function fmtDur(sec: number) {
 .wb-title { flex: 1; min-width: 200px; }
 .wb-title b { font-size: 18px; margin-right: 10px; }
 .wb-sub { color: #9499a0; font-size: 13px; }
+.cfgtag {
+  color: #9499a0;
+  border: 1px solid #e6e8ec;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+  margin-left: 8px;
+}
 .sav.error { color: #f56c6c; }
 .sav.saved { color: #67c23a; }
 .sav.clickable { cursor: pointer; text-decoration: underline; }
@@ -2005,6 +2105,33 @@ function fmtDur(sec: number) {
 }
 .favbtn:hover { transform: scale(1.15); }
 .favbtn.on { color: #f7a35c; }
+.aprow td { padding: 6px 8px 2px; }
+.apin {
+  width: 100%;
+  height: 30px;
+  border: 1px dashed #dcdfe6;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: #61666d;
+  outline: none;
+  background: #fafbfc;
+}
+.apin:focus {
+  border-color: #fb7299;
+  border-style: solid;
+  background: #fff;
+}
+.ap-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ap-alert .apin {
+  width: 180px;
+  background: #fff;
+}
 .hint { color: #9499a0; font-size: 12.5px; margin: 10px 0 0; }
 
 .quickrow {

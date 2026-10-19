@@ -18,7 +18,21 @@
       还没有默认成员：可在<RouterLink to="/settings">设置页</RouterLink>添加，或新建一期后用「📨 邀请」让朋友自助加入。
     </el-alert>
 
-    <el-card v-if="sessions.length" class="mb16 aggregate" shadow="never">
+    <el-card shadow="never" class="mb16 quickstart">
+      <div class="qs-row">
+        <span class="qs-title">⚡ 快速开始</span>
+        <el-input
+          v-model="quickInput"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 4 }"
+          placeholder="临时场：粘贴或输入歌名，每行一首，回车直接开评；单行粘 BV 号/分享链接也行"
+          @keydown.enter="onQuickEnter"
+        />
+        <el-button type="primary" :loading="quickCreating" @click="quickStart">开评 →</el-button>
+      </div>
+    </el-card>
+
+    <el-card v-if="eligibleCount" class="mb16 aggregate" shadow="never">
       <div class="agg-row">
         <div>
           <b>🏆 全期总榜</b>
@@ -42,6 +56,7 @@
           <div class="sc-title" @click="go(s.id)">
             <span class="sc-name">{{ s.name }}</span>
             <el-tag v-if="s.done" size="small" type="success" effect="plain">已完成</el-tag>
+            <el-tag v-if="s.noGlobal" size="small" type="info" effect="plain">不计入总榜</el-tag>
           </div>
           <div class="sc-meta">
             <a v-if="s.bvid" :href="`https://www.bilibili.com/video/${s.bvid}`" target="_blank">{{
@@ -92,7 +107,13 @@
                 </el-dropdown-item>
                 <el-dropdown-item @click="openInvite(s)">📨 邀请朋友（链接/二维码）</el-dropdown-item>
                 <el-dropdown-item @click="pickImport(s)">导入打分单…</el-dropdown-item>
-                <el-dropdown-item divided @click="rename(s)">重命名</el-dropdown-item>
+                <el-dropdown-item divided @click="toggleNoGlobal(s)">
+                  {{ s.noGlobal ? '✓ 恢复计入全期总榜' : '不计入全期总榜' }}
+                </el-dropdown-item>
+                <el-dropdown-item divided @click="router.push(`/session/${s.id}/settings`)">
+                  ⚙ 本期设置
+                </el-dropdown-item>
+                <el-dropdown-item @click="rename(s)">重命名</el-dropdown-item>
                 <el-dropdown-item v-if="s.done" @click="reopen(s)">重新开放评分</el-dropdown-item>
                 <el-dropdown-item v-else @click="finish(s)">结束本场并锁定</el-dropdown-item>
                 <el-dropdown-item divided @click="remove(s)">
@@ -161,7 +182,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -200,6 +221,62 @@ function go(id: string, invite = false) {
   router.push(invite && !mobile ? { path, query: { invite: '1' } } : path)
 }
 
+// ---------- ⚡ 快速开始：临时三五首歌，粘贴回车直接开评 ----------
+const quickInput = ref('')
+const quickCreating = ref(false)
+
+function onQuickEnter(e: KeyboardEvent) {
+  if (e.isComposing) return // 中文输入法选词回车不触发
+  e.preventDefault()
+  quickStart()
+}
+
+async function quickStart() {
+  const lines = quickInput.value
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+  if (!lines.length) {
+    ElMessage.warning('先输入或粘贴歌名，每行一首')
+    return
+  }
+  quickCreating.value = true
+  try {
+    let payload: Record<string, unknown>
+    const bv = lines.length === 1 ? extractBv(lines[0]) : ''
+    const isVideoLink =
+      /^BV[a-zA-Z0-9]{8,12}$/.test(bv) || (lines.length === 1 && /b23\.tv/i.test(lines[0]))
+    if (lines.length === 1 && isVideoLink) {
+      payload = { mode: 'bvid', bvid: lines[0], name: '' }
+    } else {
+      const first = lines[0].replace(/^【[^】]*】/, '').slice(0, 24)
+      payload = {
+        mode: 'manual',
+        lines,
+        name: lines.length > 1 ? `「${first}」等${lines.length}首` : `「${first}」`,
+        manualTitle: ''
+      }
+    }
+    const session = await api.createSession(payload)
+    quickInput.value = ''
+    ElMessage.success(`已导入 ${session.parts.length} 个分P`)
+    go(session.id)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    quickCreating.value = false
+  }
+}
+
+// ---------- 不计入全期总榜（轻量临时场隔离数据） ----------
+const eligibleCount = computed(() => sessions.value.filter(s => !s.noGlobal).length)
+
+async function toggleNoGlobal(s: SessionMeta) {
+  await api.updateSessionMeta(s.id, { noGlobal: !s.noGlobal })
+  ElMessage.success(!s.noGlobal ? '已排除出全期总榜' : '已恢复计入全期总榜')
+  refresh()
+}
+
 function preview(url: string) {
   window.open(url, '_blank')
 }
@@ -228,7 +305,10 @@ async function create() {
       })
     }
     showCreate.value = false
-    ElMessage.success(`已导入 ${session.parts.length} 个分 P`)
+    const extra = (session as Session & { enhancedByDesc?: number }).enhancedByDesc
+    ElMessage.success(
+      `已导入 ${session.parts.length} 个分P` + (extra ? `，简介辅助解析 ${extra} 首` : '')
+    )
     go(session.id, true)
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -400,6 +480,20 @@ async function onImportFiles(e: Event) {
 }
 .mb16 {
   margin-bottom: 16px;
+}
+.quickstart :deep(.el-card__body) {
+  padding: 12px 16px;
+}
+.qs-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.qs-title {
+  font-weight: 600;
+  white-space: nowrap;
+  padding-top: 5px;
+  color: #fb7299;
 }
 .aggregate :deep(.el-card__body) {
   padding: 14px 18px;

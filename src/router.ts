@@ -17,6 +17,11 @@ const router = createRouter({
       meta: { host: true }
     },
     {
+      path: '/session/:id/settings',
+      name: 'session-settings',
+      component: () => import('./views/SessionSettingsView.vue')
+    },
+    {
       path: '/session/:id/pip',
       name: 'pip',
       component: () => import('./views/PipView.vue'),

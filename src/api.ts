@@ -9,9 +9,11 @@ import type {
   NcmLibStatus,
   NcmSong,
   PatchResult,
+  Parsed,
   Session,
   SessionMeta,
   SessionOp,
+  SessionSettings,
   StageState
 } from './types'
 
@@ -82,9 +84,28 @@ export const api = {
     req<Session>('/sessions', { method: 'POST', body: JSON.stringify(payload) }),
   listSessions: () => req<SessionMeta[]>('/sessions'),
   getSession: (id: string) => req<Session>(`/sessions/${id}`),
-  /** 期名 / 本场成员 / 房间口令（只改元信息，不碰分数） */
-  updateSessionMeta: (id: string, patch: { name?: string; members?: string[]; pin?: string }) =>
-    req<{ saved: boolean; rev: number; name: string; members: string[]; pin: string }>(
+  /** 期名 / 本场成员 / 房间口令 / 本期设置快照（只改元信息与配置，不碰分数） */
+  updateSessionMeta: (
+    id: string,
+    patch: {
+      name?: string
+      members?: string[]
+      pin?: string
+      followGlobal?: boolean
+      settings?: SessionSettings | null
+      noGlobal?: boolean
+    }
+  ) =>
+    req<{
+      saved: boolean
+      rev: number
+      name: string
+      members: string[]
+      pin: string
+      followGlobal: boolean
+      settings: SessionSettings | null
+      noGlobal: boolean
+    }>(
       `/sessions/${id}`,
       { method: 'PUT', body: JSON.stringify(patch) }
     ),
@@ -247,7 +268,11 @@ export const api = {
     req<{ configRestored: boolean; sessionsRestored: number }>('/restore', {
       method: 'POST',
       body: JSON.stringify(bundle)
-    })
+    }),
+
+  // AI 标题识别（分P标题批量结构化，只补空/弱字段）
+  aiParseTitles: (id: string) =>
+    req<{ applied: number; parts: Parsed[] }>(`/sessions/${id}/ai-parse`, { method: 'POST' })
 }
 
 export function download(url: string) {

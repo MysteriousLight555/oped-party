@@ -40,14 +40,14 @@ import {
   progressOf,
   stageOf
 } from './party.js'
-import { fetchVideo } from './bili.js'
-import { parseTitle } from './parse.js'
-import { sessionStats, allStats } from './stats.js'
+import { fetchVideo, resolveBvid } from './bili.js'
+import { parseTitle, applyDescEnhance } from './parse.js'
+import { sessionStats, allStats, sessionConfig } from './stats.js'
 import { renderSessionHtml, renderAllHtml } from './report-html.js'
 import { renderSessionMd, renderAllMd } from './report-md.js'
 import { buildSessionWorkbook, buildAllWorkbook } from './report-xlsx.js'
 import { renderSheetHtml } from './sheet.js'
-import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection } from './ai.js'
+import { loadAiConfig, saveAiConfig, aiInfo, generateReview, testConnection, aiParseTitles } from './ai.js'
 import {
   ncmStatus,
   matchPart,
@@ -212,11 +212,12 @@ app.put('/api/config', hostOnly, (req, res) => {
 
 // ---------- B 站视频信息 ----------
 app.get('/api/bili/video', hostOnly, async (req, res) => {
-  const bvid = String(req.query.bvid || '').trim()
-  if (!/^BV[a-zA-Z0-9]{8,12}$/.test(bvid)) {
-    return res.status(400).json({ error: 'BV 号格式不正确' })
-  }
   try {
+    // 入参可以是 BV 号、含 BV 的分享文本或 b23.tv 短链
+    let bvid = await resolveBvid(String(req.query.bvid || '').trim())
+    if (!/^BV[a-zA-Z0-9]{8,12}$/.test(bvid)) {
+      return res.status(400).json({ error: 'BV 号格式不正确（支持 BV 号、分享文本、b23.tv 短链）' })
+    }
     const video = await fetchVideo(bvid, { refresh: req.query.refresh === '1' })
     ok(res).json(video)
   } catch (e) {
@@ -227,7 +228,7 @@ app.get('/api/bili/video', hostOnly, async (req, res) => {
 // ---------- 期次 ----------
 app.post('/api/sessions', hostOnly, async (req, res) => {
   const body = req.body || {}
-  let source = { videoTitle: '', cover: '', bvid: '', rawParts: [] }
+  let source = { videoTitle: '', cover: '', bvid: '', desc: '', rawParts: [] }
 
   try {
     if (body.mode === 'manual') {
@@ -237,15 +238,29 @@ app.post('/api/sessions', hostOnly, async (req, res) => {
       if (!lines.length) return res.status(400).json({ error: '粘贴的列表为空' })
       source = { videoTitle: String(body.manualTitle || '手动导入').trim(), cover: '', bvid: '', rawParts: lines.map((l, i) => ({ page: i + 1, cid: 0, part: l, duration: 0 })) }
     } else {
-      const bvid = String(body.bvid || '').trim()
-      if (!/^BV[a-zA-Z0-9]{8,12}$/.test(bvid)) {
-        return res.status(400).json({ error: 'BV 号格式不正确，形如 BV1bFTB6GEjW' })
+      // 入参兼容：纯 BV 号 / 含 BV 的分享文本 / b23.tv 短链
+      let bvid = String(body.bvid || '').trim()
+      if (!/(BV[a-zA-Z0-9]{8,12})/.test(bvid) && /b23\.tv/i.test(bvid)) {
+        try {
+          bvid = await resolveBvid(bvid)
+        } catch (e) {
+          return res.status(502).json({ error: `短链解析失败：${e.message}。可改用「手动粘贴列表」导入。` })
+        }
+        if (!bvid) {
+          return res.status(400).json({ error: '短链里没找到 BV 号，请确认链接有效，或改用「手动粘贴列表」导入' })
+        }
+      }
+      const m = bvid.match(/(BV[a-zA-Z0-9]{8,12})/)
+      bvid = m ? m[1] : ''
+      if (!bvid) {
+        return res.status(400).json({ error: 'BV 号格式不正确，形如 BV1bFTB6GEjW（也支持 b23.tv 短链）' })
       }
       const video = await fetchVideo(bvid, { refresh: body.refresh === true })
       source = {
         videoTitle: video.title,
         cover: video.cover,
         bvid,
+        desc: video.desc || '',
         rawParts: video.parts
       }
     }
@@ -253,17 +268,19 @@ app.post('/api/sessions', hostOnly, async (req, res) => {
     return res.status(502).json({ error: `拉取分P失败：${e.message}。可改用「手动粘贴列表」导入。` })
   }
 
-  const config = loadConfig()
+  // 建期即快照：把当前全局配置凝固成本期设置，之后与全局解耦（可在「本期设置」里单独调整）
+  const cfg = loadConfig()
   const session = {
     id: newSessionId(),
     name: String(body.name || '').trim() || source.videoTitle || '新的一期',
     bvid: source.bvid,
     videoTitle: source.videoTitle,
     cover: source.cover,
+    desc: source.desc || '',
     createdAt: new Date().toISOString(),
     done: false,
     rev: 0,
-    members: [...(config.persons || [])],
+    members: [...(cfg.persons || [])],
     pin: newPin(),
     stage: { currentPage: null, blind: false, revealed: false, updatedAt: null },
     parts: source.rawParts.map(p => ({
@@ -280,12 +297,22 @@ app.post('/api/sessions', hostOnly, async (req, res) => {
       comment: '',
       tags: [],
       skipped: false
-    }))
+    })),
+    settings: {
+      persons: [...cfg.persons],
+      dimensions: structuredClone(cfg.dimensions),
+      tags: [...cfg.tags],
+      scoreMin: cfg.scoreMin,
+      scoreMax: cfg.scoreMax
+    },
+    followGlobal: false
   }
-  normalizeSession(session, config)
+  // 标题解析不理想时，用视频简介里的曲目单兜底（条目数与分P数一致才做位置对齐）
+  const enhancedByDesc = applyDescEnhance(session.parts, source.desc)
+  normalizeSession(session, cfg)
   session.stage.currentPage = session.parts.find(p => !p.skipped)?.page ?? null
   saveSession(session)
-  ok(res).json(session)
+  ok(res).json({ ...session, enhancedByDesc })
 })
 
 app.get('/api/sessions', hostOnly, (req, res) => {
@@ -299,6 +326,9 @@ app.get('/api/sessions', hostOnly, (req, res) => {
       videoTitle: s.videoTitle,
       createdAt: s.createdAt,
       done: s.done,
+      noGlobal: !!s.noGlobal,
+      followGlobal: !!s.followGlobal,
+      hasSettings: !!s.settings,
       total: st.totalActive,
       voted: st.votedCount,
       complete: st.completeCount,
@@ -385,13 +415,28 @@ app.put('/api/sessions/:id', hostOnly, (req, res) => {
     }
     s.pin = pin
   }
+  if (typeof body.followGlobal === 'boolean') {
+    s.followGlobal = body.followGlobal
+  }
+  if (
+    body.settings === null ||
+    (body.settings && typeof body.settings === 'object' && Array.isArray(body.settings.dimensions))
+  ) {
+    s.settings = body.settings
+  }
+  if (typeof body.noGlobal === 'boolean') {
+    s.noGlobal = body.noGlobal
+  }
   saveSession(s)
   ok(res).json({
     saved: true,
     rev: s.rev,
     name: s.name,
     members: s.members,
-    pin: s.pin
+    pin: s.pin,
+    followGlobal: !!s.followGlobal,
+    settings: s.settings ?? null,
+    noGlobal: !!s.noGlobal
   })
 })
 
@@ -562,7 +607,8 @@ function sendFile(res, { format, baseName, inline, content }) {
 app.get('/api/sessions/:id/report/:format', hostOnly, async (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
-  const config = loadConfig()
+  // 报告用本期生效配置（快照或跟随全局），旧期次的反差值不会被改全局追溯影响
+  const config = sessionConfig(session, loadConfig())
   const st = sessionStats(session, config)
   const { format } = req.params
   const inline = req.query.inline === '1'
@@ -580,8 +626,13 @@ app.get('/api/sessions/:id/report/:format', hostOnly, async (req, res) => {
 })
 
 app.get('/api/reports/all/:format', hostOnly, async (req, res) => {
-  const sessions = listSessions()
-  if (!sessions.length) return res.status(404).json({ error: '还没有任何期次' })
+  const all = listSessions()
+  if (!all.length) return res.status(404).json({ error: '还没有任何期次' })
+  // 「不计入全期总榜」的期次（轻量临时场）不参与跨期聚合
+  const sessions = all.filter(s => !s.noGlobal)
+  if (!sessions.length) {
+    return res.status(404).json({ error: '所有期次都设置了「不计入全期总榜」，没有可聚合的数据' })
+  }
   const config = loadConfig()
   const st = allStats(sessions, config)
   const { format } = req.params
@@ -653,7 +704,7 @@ app.put(
 app.get('/api/sessions/:id/sheet', hostOnly, (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
-  const html = renderSheetHtml(session, loadConfig())
+  const html = renderSheetHtml(session, sessionConfig(session, loadConfig()))
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
   res.setHeader(
     'Content-Disposition',
@@ -675,6 +726,8 @@ app.post('/api/sessions/:id/import', hostOnly, (req, res) => {
   }
   const body = req.body || {}
   const sheets = Array.isArray(body) ? body : Array.isArray(body.sheets) ? body.sheets : [body]
+  // 本期有快照且未跟随全局时，新成员先进本期名单（全局模板也同步，方便下期沿用）
+  const useSnapshot = s.followGlobal !== true && s.settings && Array.isArray(s.settings.dimensions)
   const added = []
   let total = 0
   let favTotal = 0
@@ -696,6 +749,10 @@ app.post('/api/sessions/:id/import', hostOnly, (req, res) => {
     if (!membersOf(s, config).includes(person)) {
       addMember(s, person, config)
       added.push(person)
+    }
+    if (useSnapshot && !(s.settings.persons || []).includes(person)) {
+      s.settings.persons = s.settings.persons || []
+      s.settings.persons.push(person)
     }
     for (const [page, score] of Object.entries(sheet.scores || {})) {
       const part = s.parts.find(p => p.page === Number(page))
@@ -767,7 +824,7 @@ app.post('/api/ai/test', async (req, res) => {
 app.post('/api/sessions/:id/ai-review', hostOnly, async (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
-  const config = loadConfig()
+  const config = sessionConfig(session, loadConfig())
   const st = sessionStats(session, config)
   try {
     const text = await generateReview(session, st, config, loadAiConfig())
@@ -1153,6 +1210,39 @@ app.post('/api/restore', hostOnly, (req, res) => {
     }
   }
   ok(res).json({ configRestored: true, sessionsRestored: n, sessionIds: ids })
+})
+
+// AI 标题识别：分P标题批量结构化，只补空/弱字段，不覆盖已解析和人工修正的信息
+app.post('/api/sessions/:id/ai-parse', async (req, res) => {
+  const session = getSession(req.params.id)
+  if (!session) return res.status(404).json({ error: '期次不存在' })
+  try {
+    const list = await aiParseTitles(loadAiConfig(), session.parts.map(p => p.title))
+    let applied = 0
+    session.parts.forEach((p, i) => {
+      const e = list[i]
+      if (!e) return
+      const cur = p.parsed
+      const next = { ...cur }
+      const fill = (key, val) => {
+        // song === title 说明正则没解析出来，视为弱字段允许补
+        const weak = key === 'song' ? !cur.song || cur.song === p.title : !cur[key]
+        if (val && weak && val !== p.title) {
+          next[key] = val
+          applied++
+        }
+      }
+      fill('kind', e.kind)
+      fill('anime', e.anime)
+      fill('song', e.song)
+      fill('artist', e.artist)
+      p.parsed = next
+    })
+    saveSession(session)
+    ok(res).json({ applied, parts: session.parts.map(p => p.parsed) })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
 })
 
 // ---------- 前端静态资源 ----------
