@@ -5,10 +5,17 @@
       <div class="wb-title">
         <b>{{ session.name }}</b>
         <span class="wb-sub">
-          已评 {{ votedCount }}/{{ totalActive }} ·
-          <span :class="['sav', saveStatus]">{{ saveText }}</span>
+          已评齐 {{ completeCount }}/{{ totalActive }} · 有分 {{ votedCount }} ·
+          <span
+            :class="['sav', saveStatus, { clickable: saveStatus === 'error' }]"
+            :title="saveStatus === 'error' ? `${saveError}（点这里重试）` : ''"
+            @click="retrySave"
+            >{{ saveText }}</span
+          >
         </span>
       </div>
+      <el-button @click="openInvite" title="生成这一期的参与链接和二维码">📨 邀请</el-button>
+      <el-button @click="openMembers" title="本场独立成员名单（打分表的列）">👥 成员</el-button>
       <el-button @click="openPip" title="置顶小窗，全屏看视频时也能打分">📺 悬浮面板</el-button>
       <el-button @click="openStage" title="大字只读屏，共享到腾讯会议让大家实时看到进度">🖥 大屏</el-button>
       <el-button
@@ -69,16 +76,34 @@
             <el-dropdown-item @click="download(api.sessionReport(session.id, 'json'))">
               导出 JSON
             </el-dropdown-item>
+            <el-dropdown-item v-if="!session.done" divided @click="finishParty">
+              🏁 结束本场并锁定
+            </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
     </div>
 
-    <el-alert v-if="cfg.persons.length === 0" type="warning" show-icon :closable="false" class="mb12">
-      还没有参与人，先去<RouterLink to="/settings">设置页</RouterLink>添加，再回来打分。
+    <el-alert v-if="members.length === 0" type="warning" show-icon :closable="false" class="mb12">
+      本场还没有成员：点上方「📨 邀请」把链接发给朋友，他们加入后会自动进名单；你也想打分就点「👥 成员」把自己加进来。
     </el-alert>
 
-    <div class="wb-body" :class="{ noperson: cfg.persons.length === 0 }">
+    <el-alert v-if="session.done" type="info" show-icon :closable="false" class="mb12">
+      本场已结束，评分已锁定；需要补分请
+      <el-button text type="primary" size="small" @click="reopenSession">重新开放</el-button>。
+    </el-alert>
+
+    <el-alert
+      v-if="!session.done && members.length === 1"
+      type="info"
+      show-icon
+      :closable="false"
+      class="mb12"
+    >
+      本场目前只有 <b>{{ members[0] }}</b> 一人。你也要一起打分的话，点上方「👥 成员」把自己加进来，或者直接邀请朋友加入。
+    </el-alert>
+
+    <div class="wb-body" :class="{ noperson: members.length === 0 }">
       <aside class="plist">
         <el-input v-model="filterText" placeholder="搜索曲名 / 歌手 / 番剧" clearable size="small" />
         <el-scrollbar class="plist-scroll">
@@ -97,7 +122,9 @@
               </span>
             </div>
             <span class="pbadges">
-              <span v-if="statusOf(item.part) === 'done'" class="ok">✓</span>
+              <span v-if="item.part.page === stagePage" class="onair" title="大屏正在放这首">▶</span>
+              <span v-if="statusOf(item.part) === 'done'" class="ok" title="所有人都评了">✓</span>
+              <span v-else-if="statusOf(item.part) === 'partial'" class="half" title="还有人没评">◐</span>
               <span v-if="item.part.skipped" class="sk">跳</span>
               <span v-if="item.part.favorites?.length" class="star">★</span>
               <span v-if="libOf(item.part.page)?.hearted" class="lb heart" title="已红心">❤</span>
@@ -169,17 +196,18 @@
           已标记为跳过，不会出现在榜单里（比如菜单、说明类分 P）。
         </el-alert>
 
-        <div class="quickrow" v-if="cfg.persons.length">
+          <div class="quickrow" v-if="members.length">
           <span class="qlabel">⚡ 连报</span>
           <input
             ref="quickRef"
             v-model="quickText"
             class="qin"
+            :disabled="locked"
             :placeholder="quickPlaceholder"
             @keydown.enter.prevent="applyQuick"
             @keydown.tab.prevent="focusFirst"
           />
-          <span class="qhint">空格分隔按人员顺序：<b>9</b> 分数 · <b>9*</b> 顺带收藏 · <b>--</b> 留空 · 少填=后面的人没分；回车提交到下一首，Tab 回表格</span>
+          <span class="qhint">空格分隔按人员顺序：<b>9 / 9.5</b> 分数 · <b>9*</b> 顺带收藏 · <b>--</b> 留空 · 少填=后面的人没分；回车提交到下一首，Tab 回表格</span>
         </div>
 
         <div class="matrix" ref="matrixRef">
@@ -203,18 +231,19 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="pn in cfg.persons" :key="pn">
+              <tr v-for="pn in members" :key="pn">
                 <td class="pname">{{ pn }}</td>
                 <td>
                   <div class="totwrap">
                     <input
                       class="sin total"
                       :value="part.scores[pn] ?? ''"
+                      :disabled="locked"
                       @input="onCellInput($event, part.scores, pn)"
                       @blur="clampCell(part.scores, pn)"
                       @keydown.enter.prevent="onEnter($event)"
                       :placeholder="`${cfg.scoreMin}-${cfg.scoreMax}`"
-                      inputmode="numeric"
+                      inputmode="decimal"
                     />
                     <span
                       v-if="dvgOf(part, pn) != null"
@@ -228,16 +257,18 @@
                   <input
                     class="sin"
                     :value="part.dimScores[d.key]?.[pn] ?? ''"
+                    :disabled="locked"
                     @input="onCellInput($event, part.dimScores[d.key], pn)"
                     @blur="clampCell(part.dimScores[d.key], pn)"
                     @keydown.enter.prevent="onEnter($event)"
-                    inputmode="numeric"
+                    inputmode="decimal"
                   />
                 </td>
                 <td>
                   <button
                     class="favbtn"
                     :class="{ on: part.favorites.includes(pn) }"
+                    :disabled="locked"
                     :title="part.favorites.includes(pn) ? '取消收藏' : '收藏'"
                     @click="toggleFav(pn)"
                   >
@@ -257,6 +288,7 @@
         <div class="extra">
           <el-input
             v-model="part.comment"
+            :disabled="locked"
             placeholder="全场短评（可选，大家的公共印象）"
             maxlength="120"
             show-word-limit
@@ -267,6 +299,7 @@
             filterable
             allow-create
             default-first-option
+            :disabled="locked"
             placeholder="全场标签（可多选，可直接输入新标签）"
           >
             <el-option v-for="t in tagOptions" :key="t" :label="t" :value="t" />
@@ -279,7 +312,7 @@
               <span class="annot-title">🪞 反差注解</span>
               <span class="annot-sub">谁给的是情怀分/套路分、为什么——逐人记录，报告里摊开看</span>
             </template>
-            <div v-for="pn in cfg.persons" :key="pn" class="annot-row">
+            <div v-for="pn in members" :key="pn" class="annot-row">
               <span class="annot-name">
                 {{ pn }}
                 <b v-if="typeof part.scores[pn] === 'number'" class="annot-score">{{
@@ -298,6 +331,7 @@
                 allow-create
                 default-first-option
                 size="small"
+                :disabled="locked"
                 placeholder="个人标签，如 工业糖精 / 情怀暴击"
                 class="annot-tags"
                 @update:model-value="(v: string[]) => setPersonTags(pn, v)"
@@ -307,6 +341,7 @@
               <el-input
                 :model-value="part.personComments?.[pn] ?? ''"
                 size="small"
+                :disabled="locked"
                 placeholder="一句话注解（可选）"
                 maxlength="80"
                 class="annot-cmt"
@@ -318,6 +353,13 @@
 
         <div class="navrow">
           <el-button @click="prev" :disabled="currentIndex === 0">← 上一首</el-button>
+          <el-button
+            :type="isStageCurrent ? 'success' : 'default'"
+            @click="publishCurrent"
+            :title="isStageCurrent ? '大屏和手机都停在这首' : '把这首设为现场当前曲，手机自动定位、大屏同步'"
+          >
+            {{ isStageCurrent ? '■ 取消投影' : '📣 投影这首' }}
+          </el-button>
           <span class="pos">P{{ part.page }} / {{ session.parts.length }}</span>
           <el-button type="primary" @click="next">下一首 →</el-button>
         </div>
@@ -411,6 +453,45 @@
       </template>
     </el-drawer>
 
+    <el-dialog v-model="memberDlg" title="👥 本场成员" width="460px">
+      <p class="member-tip">
+        这一期独立的名单：打分表的列、大屏进度、漏评检查都以它为准。删掉的人历史分数仍保留，只是不再参与"还差谁"。
+      </p>
+      <div class="member-chips">
+        <el-tag
+          v-for="pn in memberDraft"
+          :key="pn"
+          closable
+          size="large"
+          :type="memberHasData(pn) ? 'success' : 'info'"
+          @close="removeDraft(pn)"
+          >{{ pn }}</el-tag
+        >
+        <span v-if="!memberDraft.length" class="member-empty">还没有成员</span>
+      </div>
+      <div class="member-add">
+        <el-input
+          v-model="memberInput"
+          placeholder="输入名字，回车添加"
+          style="width: 200px"
+          @keydown.enter="addDraft"
+        />
+        <el-button @click="addDraft">添加</el-button>
+        <el-button text @click="syncDraft">从设置页补齐</el-button>
+      </div>
+      <p v-if="memberDirty" class="member-tip">名单有改动，点「保存成员」生效。</p>
+      <template #footer>
+        <el-button @click="memberDlg = false">取消</el-button>
+        <el-button type="primary" :loading="savingMembers" @click="saveMembers">保存成员</el-button>
+      </template>
+    </el-dialog>
+
+    <InviteDialog
+      v-model="inviteOpen"
+      :session="session"
+      @changed="onInviteChanged"
+    />
+
     <!-- 悬浮面板内容：平时隐藏，开 PiP 时整个节点搬进置顶窗（只用原生控件，避免组件库弹层跨文档问题） -->
     <div ref="pipHostRef" class="pip-host">
       <div v-if="part && cfg" class="ph-wrap">
@@ -428,13 +509,14 @@
             </span>
             <span class="ph-favslot">★</span>
           </div>
-          <div v-for="pn in cfg.persons" :key="pn" class="ph-row">
+          <div v-for="pn in members" :key="pn" class="ph-row">
             <span class="ph-name">{{ pn }}</span>
             <input
               class="ph-in"
               :value="part.scores[pn] ?? ''"
               placeholder="—"
-              inputmode="numeric"
+              inputmode="decimal"
+              :disabled="locked"
               @input="onPipInput($event, pn)"
               @blur="pipClamp(pn)"
               @keydown.enter.prevent="pipEnter($event)"
@@ -446,7 +528,8 @@
                 class="ph-in dim"
                 :value="part.dimScores?.[d.key]?.[pn] ?? ''"
                 placeholder="—"
-                inputmode="numeric"
+                inputmode="decimal"
+                :disabled="locked"
                 @input="onPipDimInput($event, pn, d.key)"
                 @blur="pipClampDim(pn, d.key)"
                 @keydown.enter.prevent="pipEnter($event)"
@@ -455,6 +538,7 @@
             <button
               class="ph-fav"
               :class="{ on: part.favorites.includes(pn) }"
+              :disabled="locked"
               title="收藏"
               @click="toggleFav(pn)"
             >
@@ -478,10 +562,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, download } from '../api'
-import type { Config, NcmSong, Part, Session } from '../types'
+import { api, download, ApiError } from '../api'
+import InviteDialog from '../components/InviteDialog.vue'
+import { applySessionOps, cloneData, diffSession, sessionSnapshotsEqual } from '../session-sync'
+import type { Config, NcmSong, Part, Session, StageState } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -497,15 +582,27 @@ const editForm = ref({ kind: '', song: '', artist: '', anime: '' })
 
 const saveStatus = ref<'saved' | 'saving' | 'error' | 'idle'>('idle')
 const savedAt = ref('')
+const saveError = ref('')
 const saveText = computed(() => {
   if (saveStatus.value === 'saving') return '保存中…'
-  if (saveStatus.value === 'error') return '保存失败！'
-  if (saveStatus.value === 'saved') return `已自动保存 ${savedAt.value}`
+  if (saveStatus.value === 'error') return `保存失败：${saveError.value}（点此重试）`
+  if (saveStatus.value === 'saved') return `已保存 ${savedAt.value}`
   return '自动保存已开启'
 })
 
+/** 上次与服务器同步时的快照：自动保存只提交它和当前界面的差异 */
+let base: Session | null = null
+let baseRev = 0
 let ready = false
 let saveTimer: number | undefined
+let saving: Promise<boolean> | null = null
+
+const locked = computed(() => Boolean(session.value?.done))
+const members = computed(() => session.value?.members || [])
+const stagePage = computed(() => session.value?.stage?.currentPage ?? null)
+const isStageCurrent = computed(
+  () => stagePage.value !== null && stagePage.value === part.value?.page
+)
 
 // ---------- 加载 ----------
 onMounted(async () => {
@@ -513,13 +610,26 @@ onMounted(async () => {
   normalize(s, c)
   session.value = s
   cfg.value = c
+  base = cloneData(s)
+  baseRev = Number(s.rev) || 0
   const firstTodo = s.parts.findIndex(p => !p.skipped && !hasScore(p))
   currentIndex.value = firstTodo >= 0 ? firstTodo : 0
   await nextTick()
   ready = true
+  if (route.query.invite === '1') {
+    inviteOpen.value = true
+    router.replace({ path: route.path, query: {} })
+  }
 })
 
 function normalize(s: Session, c: Config) {
+  if (!Array.isArray(s.members)) s.members = [...(c.persons || [])]
+  s.stage = {
+    currentPage: typeof s.stage?.currentPage === 'number' ? s.stage.currentPage : null,
+    blind: Boolean(s.stage?.blind),
+    revealed: Boolean(s.stage?.revealed),
+    updatedAt: s.stage?.updatedAt ?? null
+  }
   for (const p of s.parts) {
     p.scores = p.scores || {}
     p.dimScores = p.dimScores || {}
@@ -542,6 +652,13 @@ const votedCount = computed(
 const totalActive = computed(
   () => (session.value?.parts || []).filter(p => !p.skipped).length
 )
+const completeCount = computed(() => {
+  const list = members.value
+  if (!list.length) return 0
+  return (session.value?.parts || []).filter(
+    p => !p.skipped && list.every(m => typeof p.scores?.[m] === 'number')
+  ).length
+})
 const liveAvg = computed(() => {
   const vals = Object.values(part.value?.scores || {}).filter(
     v => typeof v === 'number'
@@ -610,7 +727,9 @@ function setPersonComment(pn: string, v: string) {
 }
 function statusOf(p: Part) {
   if (p.skipped) return 'skip'
-  return hasScore(p) ? 'done' : 'todo'
+  const list = members.value
+  if (list.length && list.every(m => typeof p.scores?.[m] === 'number')) return 'done'
+  return hasScore(p) ? 'partial' : 'todo'
 }
 
 // 列表第二行：歌手 · 《作品》（类型单独做成小徽标）
@@ -620,11 +739,11 @@ function subOf(p: Part): string {
   return [pr.artist, pr.anime ? `《${pr.anime}》` : ''].filter(Boolean).join(' · ')
 }
 
-// ---------- 自动保存 ----------
+// ---------- 自动保存（字段级合并） ----------
 watch(
   session,
   () => {
-    if (!ready) return
+    if (!ready || locked.value) return
     scheduleSave()
   },
   { deep: true }
@@ -633,28 +752,100 @@ watch(
 function scheduleSave() {
   saveStatus.value = 'saving'
   window.clearTimeout(saveTimer)
-  saveTimer = window.setTimeout(doSave, 700)
+  saveTimer = window.setTimeout(() => {
+    void doSave()
+  }, 600)
 }
 
-async function doSave() {
-  if (!session.value) return
+async function doSave(): Promise<boolean> {
+  // 同一工作台一次只发一份，后续输入等上一份完成后再比较快照。
+  if (saving) {
+    if (!(await saving)) return false
+    return doSave()
+  }
+  saving = saveSnapshot()
+  let saved: boolean
   try {
-    await api.saveSession(session.value)
+    saved = await saving
+  } finally {
+    saving = null
+  }
+  if (saved && base && session.value && !sessionSnapshotsEqual(base, session.value)) {
+    window.clearTimeout(saveTimer)
+    return doSave()
+  }
+  return saved
+}
+
+async function saveSnapshot(): Promise<boolean> {
+  if (!session.value) return true
+  const snapshot = cloneData(session.value)
+  if (!base || base.id !== snapshot.id) {
+    base = snapshot
+    return true
+  }
+  const ops = diffSession(base, snapshot)
+  if (!ops.length) {
+    base = snapshot
     saveStatus.value = 'saved'
     savedAt.value = new Date().toLocaleTimeString('zh-CN')
+    return true
+  }
+  saveStatus.value = 'saving'
+  saveError.value = ''
+  try {
+    const r = await api.patchSession(sessionId, ops, baseRev)
+    base = snapshot
+    baseRev = r.rev
+    savedAt.value = new Date().toLocaleTimeString('zh-CN')
+    if (r.conflicts?.length) {
+      ElMessage.warning(
+        `有 ${r.conflicts.length} 处和朋友同时改到同一格，已按你刚输入的值保存`
+      )
+    }
+    if (!sessionSnapshotsEqual(snapshot, session.value)) {
+      // 请求期间又改了几格：继续保存，别丢
+      saveStatus.value = 'saving'
+      scheduleSave()
+    } else {
+      saveStatus.value = 'saved'
+    }
+    return true
   } catch (e) {
+    const err = e as ApiError
+    if (err.code === 'SESSION_CLOSED' && session.value) session.value.done = true
     saveStatus.value = 'error'
-    ElMessage.error(`保存失败：${(e as Error).message}`)
+    saveError.value = err.message
+    return false
   }
 }
 
-function leave() {
-  if (saveStatus.value === 'saving') doSave()
+function retrySave() {
+  if (saveStatus.value !== 'error') return
+  window.clearTimeout(saveTimer)
+  void doSave()
+}
+
+async function leave() {
+  window.clearTimeout(saveTimer)
+  const ok = await doSave()
+  if (!ok) {
+    try {
+      await ElMessageBox.confirm(
+        '还有修改没有保存成功，离开会丢掉这些改动。仍要离开吗？',
+        '未保存的修改',
+        { type: 'warning', confirmButtonText: '仍要离开', cancelButtonText: '留下重试' }
+      )
+    } catch {
+      return
+    }
+  }
   router.push('/')
 }
 
 onBeforeUnmount(() => {
-  if (saveStatus.value === 'saving') doSave()
+  window.clearTimeout(saveTimer)
+  if (session.value && base) void doSave()
   // PiP 还开着就把节点搬回来，避免组件卸载时节点留在别的文档里
   if (pipWin && !pipWin.closed && pipHostRef.value) {
     document.body.append(pipHostRef.value)
@@ -685,7 +876,8 @@ function clampCell(map: Record<string, number | undefined>, who: string) {
   }
   const min = cfg.value?.scoreMin ?? 1
   const max = cfg.value?.scoreMax ?? 10
-  map[who] = Math.min(max, Math.max(min, Math.round(v)))
+  // 与后端一致：最多一位小数
+  map[who] = Math.min(max, Math.max(min, Math.round(v * 10) / 10))
 }
 
 function onEnter(e: KeyboardEvent) {
@@ -749,15 +941,198 @@ function globalKey(e: KeyboardEvent) {
 }
 onMounted(() => document.addEventListener('keydown', globalKey))
 
+// ---------- 本场成员（每期独立名单） ----------
+const memberDlg = ref(false)
+const memberDraft = ref<string[]>([])
+const memberInput = ref('')
+const savingMembers = ref(false)
+const memberDirty = computed(
+  () => JSON.stringify(memberDraft.value) !== JSON.stringify(members.value)
+)
+
+function openMembers() {
+  memberDraft.value = [...members.value]
+  memberInput.value = ''
+  memberDlg.value = true
+}
+
+function addDraft() {
+  const name = memberInput.value.trim().slice(0, 20)
+  if (!name) return
+  if (memberDraft.value.includes(name)) {
+    ElMessage.warning('已经在名单里了')
+    return
+  }
+  memberDraft.value.push(name)
+  memberInput.value = ''
+}
+
+function removeDraft(pn: string) {
+  memberDraft.value = memberDraft.value.filter(x => x !== pn)
+}
+
+function memberHasData(pn: string): boolean {
+  return (session.value?.parts || []).some(
+    p =>
+      typeof p.scores?.[pn] === 'number' ||
+      (p.favorites || []).includes(pn) ||
+      Boolean(p.personTags?.[pn]?.length)
+  )
+}
+
+function syncDraft() {
+  for (const pn of cfg.value?.persons || []) {
+    if (!memberDraft.value.includes(pn)) memberDraft.value.push(pn)
+  }
+}
+
+async function saveMembers() {
+  if (!memberDraft.value.length) {
+    ElMessage.warning('至少保留一个成员')
+    return
+  }
+  savingMembers.value = true
+  try {
+    const r = await api.updateSessionMeta(sessionId, { members: memberDraft.value })
+    if (session.value) {
+      session.value.members = [...r.members]
+      session.value.rev = r.rev
+    }
+    if (base) {
+      base.members = [...r.members]
+      base.rev = r.rev
+    }
+    baseRev = r.rev
+    memberDlg.value = false
+    ElMessage.success(`本场成员已更新（${r.members.length} 人）`)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    savingMembers.value = false
+  }
+}
+
+// ---------- 邀请 / 现场控制 ----------
+const inviteOpen = ref(false)
+
+function openInvite() {
+  inviteOpen.value = true
+}
+
+function onInviteChanged(patch: { pin?: string; stage?: StageState }) {
+  if (!session.value) return
+  if (patch.pin !== undefined) session.value.pin = patch.pin
+  if (patch.stage) session.value.stage = patch.stage
+}
+
+async function publishCurrent() {
+  if (!session.value || !part.value) return
+  if (!isStageCurrent.value && part.value.skipped) {
+    ElMessage.warning('这首已标记为跳过，先取消跳过再投影')
+    return
+  }
+  const page = isStageCurrent.value ? null : part.value.page
+  try {
+    const r = await api.setStage(sessionId, { currentPage: page })
+    session.value.stage = r.stage
+    if (base) base.rev = r.rev
+    baseRev = r.rev
+    if (page === null) ElMessage.info('已取消投影，大屏回到"下一首待评"')
+    else ElMessage.success(`已投影 P${page}「${part.value.parsed.song || part.value.title}」`)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function reopenSession() {
+  try {
+    const r = await api.reopenSession(sessionId)
+    if (session.value) {
+      session.value.done = false
+      session.value.rev = r.rev
+    }
+    if (base) base.done = false
+    baseRev = r.rev
+    ElMessage.success('已重新开放，可以继续改分了')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function finishParty() {
+  window.clearTimeout(saveTimer)
+  if (!(await doSave())) {
+    ElMessage.error('还有修改未保存成功，请重试保存后再结束本场')
+    return
+  }
+  window.clearTimeout(saveTimer)
+  try {
+    const r = await api.finishSession(sessionId)
+    if (session.value) {
+      session.value.done = true
+      session.value.rev = r.rev
+    }
+    if (base) base.done = true
+    baseRev = r.rev
+    ElMessage.success(`已结束并锁定评分（${r.missingCount} 首没评齐）`)
+    return
+  } catch (e) {
+    const err = e as ApiError
+    const body = err.body as {
+      code?: string
+      missing?: Array<{ page: number; song: string; missing: string[] }>
+    } | null
+    if (body?.code !== 'MISSING_REVIEWS' || !body.missing?.length) {
+      ElMessage.error(err.message)
+      return
+    }
+    const lines = body.missing
+      .slice(0, 8)
+      .map(m => `P${m.page}「${m.song}」还差 ${m.missing.join('、')}`)
+      .join('\n')
+    const more = body.missing.length > 8 ? `\n…另有 ${body.missing.length - 8} 首` : ''
+    try {
+      await ElMessageBox.confirm(
+        `还有 ${body.missing.length} 首没评齐：\n\n${lines}${more}\n\n仍要结束并锁定吗？`,
+        '有漏评',
+        {
+          type: 'warning',
+          confirmButtonText: '仍要结束',
+          cancelButtonText: '先补分',
+          customStyle: { whiteSpace: 'pre-wrap' }
+        }
+      )
+    } catch {
+      return
+    }
+    try {
+      const r = await api.finishSession(sessionId, true)
+      if (session.value) {
+        session.value.done = true
+        session.value.rev = r.rev
+      }
+      if (base) base.done = true
+      baseRev = r.rev
+      ElMessage.warning('已结束并锁定，漏评记录仍保留在报告里')
+    } catch (e2) {
+      ElMessage.error((e2 as Error).message)
+    }
+  }
+}
+
 // ---------- 报分连录：一行填完整曲所有分 ----------
 const quickRef = ref<HTMLInputElement | null>(null)
 const quickText = ref('')
 const quickPlaceholder = computed(() =>
-  cfg.value?.persons.map((_, i) => (i === 0 ? '如 9' : '8.5')).join(' ') || ''
+  members.value.map((_, i) => (i === 0 ? '如 9' : '8.5')).join(' ') || ''
 )
 
 function applyQuick() {
   if (!session.value || !part.value || !cfg.value) return
+  if (locked.value) {
+    ElMessage.warning('本场已结束，评分已锁定')
+    return
+  }
   const raw = quickText.value.trim()
   if (!raw) {
     ElMessage.info('输入为空：直接回车只跳下一首，分数没动')
@@ -766,7 +1141,7 @@ function applyQuick() {
     return
   }
   const tokens = raw.split(/\s+/)
-  const persons = cfg.value.persons
+  const persons = members.value
   if (tokens.length > persons.length) {
     ElMessage.error(`多打了：最多 ${persons.length} 个值（${persons.join(' ')}）`)
     return
@@ -786,7 +1161,7 @@ function applyQuick() {
       ElMessage.error(`第 ${i + 1} 个值「${t}」不是 ${min}~${max} 的分数，整行没提交`)
       return
     }
-    plan.push({ person: persons[i], score: Math.round(num), fav })
+    plan.push({ person: persons[i], score: Math.round(num * 10) / 10, fav })
   }
   for (const p of plan) {
     if (p.score === undefined) delete part.value.scores[p.person]
@@ -852,7 +1227,7 @@ function pipClampDim(pn: string, dimKey: string) {
   }
   const min = cfg.value?.scoreMin ?? 1
   const max = cfg.value?.scoreMax ?? 10
-  map[pn] = Math.min(max, Math.max(min, Math.round(v)))
+  map[pn] = Math.min(max, Math.max(min, Math.round(v * 10) / 10))
 }
 
 function pipClamp(pn: string) {
@@ -944,7 +1319,7 @@ async function openPip() {
   }
 }
 
-// ---------- 远程写入同步（悬浮面板/在线打分页改了数据，这里跟上） ----------
+// ---------- 远程写入同步（朋友交分 / 悬浮面板改分，这里跟上） ----------
 async function refreshSilently() {
   if (!session.value || !cfg.value) return
   if (saveStatus.value === 'saving') return
@@ -956,18 +1331,28 @@ async function refreshSilently() {
   if (pae && (pae.tagName === 'INPUT' || pae.tagName === 'TEXTAREA')) return
   try {
     const s = await api.getSession(sessionId)
-    // await 期间用户可能已开始编辑/保存：二次校验，避免用服务器旧数据覆盖本地新输入
-    const statusNow = saveStatus.value as string
-    if (statusNow === 'saving' || statusNow === 'error') return
+    // await 期间用户可能已开始编辑：二次校验
+    if ((saveStatus.value as string) === 'saving') return
     const ae2 = document.activeElement
     if (ae2 && (ae2.tagName === 'INPUT' || ae2.tagName === 'TEXTAREA')) return
     if (s.parts.length !== session.value.parts.length) return
+    // 迟到的旧响应不要盖掉刚保存的新版本
+    if (Number(s.rev || 0) < baseRev) return
+
+    // 把本地还没提交成功的改动叠到服务器快照上，刷新不丢正在编辑的内容
+    const pending = base ? diffSession(base, session.value) : []
+    const remote = cloneData(s)
+    base = cloneData(remote)
+    baseRev = Number(s.rev) || 0
+    normalize(remote, cfg.value)
+    if (pending.length) applySessionOps(remote, pending)
+
     ready = false
-    normalize(s, cfg.value)
-    session.value = s
-    currentIndex.value = Math.min(currentIndex.value, s.parts.length - 1)
+    session.value = remote
+    currentIndex.value = Math.min(currentIndex.value, remote.parts.length - 1)
     await nextTick()
     ready = true
+    if (pending.length && saveStatus.value !== 'error') scheduleSave()
   } catch {
     /* 忽略瞬时错误 */
   }
@@ -977,7 +1362,7 @@ onMounted(() => {
   window.addEventListener('focus', refreshSilently)
   pollTimer = window.setInterval(() => {
     if (!document.hidden) refreshSilently()
-  }, 8000)
+  }, 5000)
 })
 
 // ---------- AI 锐评（DeepSeek，按需触发） ----------
@@ -1427,6 +1812,31 @@ function fmtDur(sec: number) {
 .wb-sub { color: #9499a0; font-size: 13px; }
 .sav.error { color: #f56c6c; }
 .sav.saved { color: #67c23a; }
+.sav.clickable { cursor: pointer; text-decoration: underline; }
+.pbadges .onair { color: #23ade5; margin-right: 3px; }
+.pbadges .half { color: #e6a23c; margin-right: 3px; }
+
+.member-tip { color: #9499a0; font-size: 12.5px; line-height: 1.6; margin: 0 0 12px; }
+.member-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 40px;
+  padding: 10px;
+  background: #fafbfc;
+  border: 1px dashed #e4e7ed;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.member-empty { color: #c0c4cc; font-size: 13px; }
+.member-add { display: flex; gap: 8px; flex-wrap: wrap; }
+.sin:disabled,
+.qin:disabled,
+.ph-in:disabled {
+  background: #f5f6f8;
+  color: #a8abb2;
+  cursor: not-allowed;
+}
 
 .wb-body {
   display: flex;

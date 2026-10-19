@@ -1,21 +1,44 @@
+import { authHeaders } from './auth'
 import type {
   AiConfigInfo,
   AiReview,
   Config,
+  JoinInfo,
+  JoinResult,
+  JoinSummary,
   NcmLibStatus,
   NcmSong,
+  PatchResult,
   Session,
-  SessionMeta
+  SessionMeta,
+  SessionOp,
+  StageState
 } from './types'
 
+export class ApiError extends Error {
+  status: number
+  code: string
+  body: unknown
+
+  constructor(status: number, message: string, body?: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body ?? null
+    this.code = (body as { code?: string } | null)?.code || ''
+  }
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch('/api' + url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...authHeaders(url),
+    ...((init?.headers as Record<string, string> | undefined) || {})
+  }
+  const res = await fetch('/api' + url, { ...init, headers })
   if (!res.ok) {
-    const e = await res.json().catch(() => ({}) as { error?: string })
-    throw new Error((e as { error?: string }).error || `请求失败（${res.status}）`)
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string }
+    throw new ApiError(res.status, body.error || `请求失败（${res.status}）`, body)
   }
   return res.json() as Promise<T>
 }
@@ -25,15 +48,70 @@ export const api = {
   saveConfig: (cfg: Config) =>
     req<Config>('/config', { method: 'PUT', body: JSON.stringify(cfg) }),
 
+  // ---------- 身份 ----------
+  claimHost: (key: string) =>
+    req<{ host: boolean }>('/host/claim', {
+      method: 'POST',
+      body: JSON.stringify({ key })
+    }),
+  hostKeyInfo: () => req<{ key: string }>('/host/key'),
+
+  // ---------- 邀请 / 加入 ----------
+  joinSessions: () => req<JoinSummary[]>('/join/sessions'),
+  joinInfo: (id: string) => req<JoinInfo>(`/join/${id}`),
+  joinSession: (id: string, person: string, pin: string) =>
+    req<JoinResult>(`/sessions/${id}/join`, {
+      method: 'POST',
+      body: JSON.stringify({ person, pin })
+    }),
+  /** 二维码 SVG（主持人接口，带身份头取回 blob，避免 <img> 带不了 header） */
+  qrObjectUrl: async (text: string): Promise<string> => {
+    const res = await fetch('/api/qr?text=' + encodeURIComponent(text), {
+      headers: authHeaders('/host/qr')
+    })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new ApiError(res.status, body.error || '二维码生成失败', body)
+    }
+    return URL.createObjectURL(await res.blob())
+  },
+
   getBiliVideo: (bvid: string) => req<unknown>(`/bili/video?bvid=${encodeURIComponent(bvid)}`),
 
   createSession: (payload: Record<string, unknown>) =>
     req<Session>('/sessions', { method: 'POST', body: JSON.stringify(payload) }),
   listSessions: () => req<SessionMeta[]>('/sessions'),
   getSession: (id: string) => req<Session>(`/sessions/${id}`),
-  saveSession: (s: Session) =>
-    req<{ saved: boolean }>(`/sessions/${s.id}`, { method: 'PUT', body: JSON.stringify(s) }),
+  /** 期名 / 本场成员 / 房间口令（只改元信息，不碰分数） */
+  updateSessionMeta: (id: string, patch: { name?: string; members?: string[]; pin?: string }) =>
+    req<{ saved: boolean; rev: number; name: string; members: string[]; pin: string }>(
+      `/sessions/${id}`,
+      { method: 'PUT', body: JSON.stringify(patch) }
+    ),
   deleteSession: (id: string) => req<{ deleted: boolean }>(`/sessions/${id}`, { method: 'DELETE' }),
+
+  /** 字段级合并写入（工作台自动保存）：只提交改过的格子 */
+  patchSession: (id: string, ops: SessionOp[], baseRev: number) =>
+    req<PatchResult>(`/sessions/${id}/patch`, {
+      method: 'PUT',
+      body: JSON.stringify({ ops, baseRev })
+    }),
+
+  /** 现场控制：当前曲 / 独立评分 / 揭晓 */
+  setStage: (id: string, patch: { currentPage?: number | null; blind?: boolean; revealed?: boolean }) =>
+    req<{ stage: StageState; rev: number }>(`/sessions/${id}/stage`, {
+      method: 'PUT',
+      body: JSON.stringify(patch)
+    }),
+  finishSession: (id: string, force = false) =>
+    req<{
+      done: boolean
+      rev: number
+      missingCount: number
+      missing: Array<{ page: number; song: string; missing: string[] }>
+    }>(`/sessions/${id}/finish`, { method: 'POST', body: JSON.stringify({ force }) }),
+  reopenSession: (id: string) =>
+    req<{ done: boolean; rev: number }>(`/sessions/${id}/reopen`, { method: 'POST' }),
 
   sessionReport: (id: string, fmt: 'html' | 'md' | 'xlsx' | 'json', inline = false) =>
     `/api/sessions/${id}/report/${fmt}${inline ? '?inline=1' : ''}`,
@@ -57,19 +135,25 @@ export const api = {
     req<{
       page: number
       scores: Record<string, number>
+      dimScores: Record<string, Record<string, number>>
       favorites: string[]
       personTags: Record<string, string[]>
       personComments: Record<string, string>
-    }>(
-      `/sessions/${id}/part/${page}`,
-      { method: 'PUT', body: JSON.stringify(body) }
-    ),
+      rev: number
+      saved: boolean
+    }>(`/sessions/${id}/part/${page}`, { method: 'PUT', body: JSON.stringify(body) }),
   sheetUrl: (id: string) => `/api/sessions/${id}/sheet`,
   importSheets: (id: string, sheets: unknown[]) =>
-    req<{ addedPersons: string[]; scores: number; favorites: number; tags: number }>(
-      `/sessions/${id}/import`,
-      { method: 'POST', body: JSON.stringify(sheets) }
-    ),
+    req<{
+      addedPersons: string[]
+      scores: number
+      favorites: number
+      tags: number
+      invalid: number
+    }>(`/sessions/${id}/import`, {
+      method: 'POST',
+      body: JSON.stringify(sheets)
+    }),
 
   // ---------- AI 锐评（DeepSeek） ----------
   getAiConfig: () => req<AiConfigInfo>('/ai/config'),

@@ -9,13 +9,13 @@
     </div>
 
     <el-alert
-      v-if="config && config.persons.length === 0"
+      v-if="config && config.persons.length === 0 && sessions.length === 0"
       type="warning"
       show-icon
       :closable="false"
       class="mb16"
     >
-      还没有配置参与人，先去<RouterLink to="/settings">设置页</RouterLink>把同学加进来，打分表才有列。
+      还没有默认成员：可在<RouterLink to="/settings">设置页</RouterLink>添加，或新建一期后用「📨 邀请」让朋友自助加入。
     </el-alert>
 
     <el-card v-if="sessions.length" class="mb16 aggregate" shadow="never">
@@ -48,16 +48,18 @@
               s.videoTitle || s.bvid
             }}</a>
             <span v-else>{{ s.videoTitle }}</span>
-            · {{ s.createdAt.slice(0, 10) }} · 已评 {{ s.voted }}/{{ s.total
-            }}<span v-if="s.skipped"> · 跳过 {{ s.skipped }}</span>
+            · {{ s.createdAt.slice(0, 10) }} · {{ s.members || 0 }} 人 · 已评齐
+            {{ s.complete || 0 }}/{{ s.total }}<span v-if="s.voted"> · 有分 {{ s.voted }}</span
+            ><span v-if="s.skipped"> · 跳过 {{ s.skipped }}</span>
           </div>
           <el-progress
-            :percentage="s.total ? Math.round((s.voted / s.total) * 100) : 0"
+            :percentage="s.total ? Math.round(((s.complete || 0) / s.total) * 100) : 0"
             :stroke-width="8"
             :show-text="false"
           />
         </div>
         <div class="sc-actions" @click.stop>
+          <el-button @click="openInvite(s)">📨 邀请</el-button>
           <el-button type="primary" @click="go(s.id)">继续打分</el-button>
           <el-dropdown trigger="click">
             <el-button>报告 ↓</el-button>
@@ -86,14 +88,13 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="download(api.sheetUrl(s.id))">
-                  下载打分单（发同学）
+                  下载离线打分单
                 </el-dropdown-item>
-                <el-dropdown-item @click="copySheetLink(s)">复制在线打分链接</el-dropdown-item>
+                <el-dropdown-item @click="openInvite(s)">📨 邀请朋友（链接/二维码）</el-dropdown-item>
                 <el-dropdown-item @click="pickImport(s)">导入打分单…</el-dropdown-item>
                 <el-dropdown-item divided @click="rename(s)">重命名</el-dropdown-item>
-                <el-dropdown-item @click="toggleDone(s)">{{
-                  s.done ? '标记为进行中' : '标记为已完成'
-                }}</el-dropdown-item>
+                <el-dropdown-item v-if="s.done" @click="reopen(s)">重新开放评分</el-dropdown-item>
+                <el-dropdown-item v-else @click="finish(s)">结束本场并锁定</el-dropdown-item>
                 <el-dropdown-item divided @click="remove(s)">
                   <span style="color: #f56c6c">删除这一期</span>
                 </el-dropdown-item>
@@ -103,6 +104,12 @@
         </div>
       </el-card>
     </div>
+
+    <InviteDialog
+      v-model="inviteOpen"
+      :session="inviteSession"
+      @changed="onInviteChanged"
+    />
 
     <el-dialog v-model="showCreate" title="新建一期" width="560px">
       <el-tabs v-model="createTab">
@@ -158,8 +165,9 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, download } from '../api'
-import type { Config, SessionMeta } from '../types'
+import { api, download, ApiError } from '../api'
+import InviteDialog from '../components/InviteDialog.vue'
+import type { Config, Session, SessionMeta, StageState } from '../types'
 
 const router = useRouter()
 const sessions = ref<SessionMeta[]>([])
@@ -170,6 +178,8 @@ const creating = ref(false)
 const createTab = ref('bvid')
 const createForm = ref({ bvidInput: '', name: '', manualTitle: '', lines: '' })
 const fileInput = ref<HTMLInputElement | null>(null)
+const inviteOpen = ref(false)
+const inviteSession = ref<Session | null>(null)
 let importTarget = ''
 
 async function refresh() {
@@ -182,10 +192,12 @@ onMounted(async () => {
   await refresh()
 })
 
-function go(id: string) {
+function go(id: string, invite = false) {
   // 手机（<768px）进个人打分页，电脑进工作台
   const mobile = window.matchMedia('(max-width: 768px)').matches
-  router.push(`/session/${id}/${mobile ? 'sheet' : 'work'}`)
+  const path = `/session/${id}/${mobile ? 'sheet' : 'work'}`
+  // 刚建好一期：电脑端直接把邀请弹窗打开，方便马上把链接发给朋友
+  router.push(invite && !mobile ? { path, query: { invite: '1' } } : path)
 }
 
 function preview(url: string) {
@@ -217,7 +229,7 @@ async function create() {
     }
     showCreate.value = false
     ElMessage.success(`已导入 ${session.parts.length} 个分 P`)
-    go(session.id)
+    go(session.id, true)
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
@@ -231,9 +243,7 @@ async function rename(s: SessionMeta) {
       inputValue: s.name,
       inputValidator: v => !!v?.trim() || '不能为空'
     })
-    const full = await api.getSession(s.id)
-    full.name = value.trim()
-    await api.saveSession(full)
+    await api.updateSessionMeta(s.id, { name: value.trim() })
     ElMessage.success('已重命名')
     refresh()
   } catch {
@@ -241,11 +251,83 @@ async function rename(s: SessionMeta) {
   }
 }
 
-async function toggleDone(s: SessionMeta) {
-  const full = await api.getSession(s.id)
-  full.done = !s.done
-  await api.saveSession(full)
+// ---------- 邀请朋友 ----------
+async function openInvite(s: SessionMeta) {
+  try {
+    inviteSession.value = await api.getSession(s.id)
+    inviteOpen.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+function onInviteChanged(patch: { pin?: string; stage?: StageState }) {
+  if (!inviteSession.value) return
+  if (patch.pin !== undefined) inviteSession.value.pin = patch.pin
+  if (patch.stage) inviteSession.value.stage = patch.stage
+}
+
+// ---------- 结束本场 / 重新开放 ----------
+async function finish(s: SessionMeta) {
+  try {
+    await ElMessageBox.confirm(
+      '结束后所有人的评分都会锁定，不能再改；大屏和排行榜仍可查看。想补分可以随时重新开放。',
+      '结束本场',
+      { type: 'warning', confirmButtonText: '结束并锁定', cancelButtonText: '再等等' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const r = await api.finishSession(s.id)
+    ElMessage.success(`已结束并锁定（本次有 ${r.missingCount} 首没评齐）`)
+  } catch (e) {
+    const err = e as ApiError
+    const body = err.body as {
+      code?: string
+      missing?: Array<{ page: number; song: string; missing: string[] }>
+    } | null
+    if (body?.code !== 'MISSING_REVIEWS' || !body.missing?.length) {
+      ElMessage.error(err.message)
+      return
+    }
+    const lines = body.missing
+      .slice(0, 8)
+      .map(m => `P${m.page}「${m.song}」还差 ${m.missing.join('、')}`)
+      .join('\n')
+    const more = body.missing.length > 8 ? `\n…另有 ${body.missing.length - 8} 首` : ''
+    try {
+      await ElMessageBox.confirm(
+        `还有 ${body.missing.length} 首没评齐：\n\n${lines}${more}\n\n仍要结束并锁定吗？`,
+        '有漏评',
+        {
+          type: 'warning',
+          confirmButtonText: '仍要结束',
+          cancelButtonText: '先补分',
+          customStyle: { whiteSpace: 'pre-wrap' }
+        }
+      )
+    } catch {
+      return
+    }
+    try {
+      await api.finishSession(s.id, true)
+      ElMessage.warning('已结束并锁定，漏评记录在报告里仍能看到')
+    } catch (err2) {
+      ElMessage.error((err2 as Error).message)
+    }
+  }
   refresh()
+}
+
+async function reopen(s: SessionMeta) {
+  try {
+    await api.reopenSession(s.id)
+    ElMessage.success('已重新开放，大家现在可以继续改分')
+    refresh()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
 }
 
 async function remove(s: SessionMeta) {
@@ -288,7 +370,8 @@ async function onImportFiles(e: Event) {
     ElMessage.success(
       `导入成功：${r.scores} 个分数、${r.favorites} 个收藏` +
         (r.tags ? `、${r.tags} 个标签` : '') +
-        (r.addedPersons.length ? `；新成员 ${r.addedPersons.join('、')} 已自动加入配置` : '')
+        (r.invalid ? `；${r.invalid} 个超出范围的分数已跳过` : '') +
+        (r.addedPersons.length ? `；${r.addedPersons.join('、')} 已加入本场成员` : '')
     )
     config.value = await api.getConfig()
     refresh()
@@ -296,18 +379,6 @@ async function onImportFiles(e: Event) {
     ElMessage.error((err as Error).message)
   }
   input.value = ''
-}
-
-function copySheetLink(s: SessionMeta) {
-  const url = `${location.origin}${location.pathname}#/sheet/${s.id}`
-  navigator.clipboard
-    .writeText(url)
-    .then(() =>
-      ElMessage.success(
-        '已复制（按当前页面地址生成）。同学若在公网访问：先运行「开远程打分.bat」，再在通道网址打开的页面里复制这个链接'
-      )
-    )
-    .catch(() => ElMessage.info(`复制失败，手动复制：${url}`))
 }
 </script>
 

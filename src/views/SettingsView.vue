@@ -29,7 +29,7 @@
     </el-card>
 
     <el-card shadow="never" class="mb16">
-      <template #header><b>参与人</b>（打分表的列，鉴赏会固定成员）</template>
+      <template #header><b>参与人</b>（新一期的默认成员；已有期次可在工作台单独增删）</template>
       <div class="chips">
         <el-tag
           v-for="p in cfg.persons"
@@ -211,12 +211,25 @@
     </el-card>
 
     <el-card shadow="never" class="mb16">
+      <template #header><b>主持人 / 邀请</b><span class="ai-head-hint">朋友用邀请链接，不需要这个密钥</span></template>
+      <div class="ncm-row">
+        <span>房间管理密钥：</span>
+        <code class="hostkey">{{ hostKey || '加载中…' }}</code>
+        <el-button size="small" :disabled="!hostKey" @click="copyHostKey">复制</el-button>
+      </div>
+      <p class="hint">
+        本机打开会自动识别为主持人；通过公网隧道或另一台设备打开管理页时，在首页「我是主持人」里输入这个密钥。
+        朋友加入用各期卡片的「📨 邀请」（参与链接 + 房间口令），只能改自己的分数。
+      </p>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
       <template #header><b>分数范围</b></template>
       <div class="rangerow">
         最低 <el-input-number v-model="cfg.scoreMin" :min="0" :max="cfg.scoreMax - 1" />
         最高 <el-input-number v-model="cfg.scoreMax" :min="cfg.scoreMin + 1" :max="100" />
       </div>
-      <p class="hint">默认 1~10 整数分。改范围不影响已有分数。</p>
+      <p class="hint">默认 1~10 分，允许一位小数（如 8.5）。改范围不影响已有分数，超出新范围的历史分仍会保留。</p>
     </el-card>
 
     <el-card shadow="never">
@@ -262,6 +275,24 @@ const cfg = ref<Config | null>(null)
 const personInput = ref('')
 const tagInput = ref('')
 const saving = ref(false)
+const hostKey = ref('')
+
+onMounted(async () => {
+  try {
+    hostKey.value = (await api.hostKeyInfo()).key
+  } catch {
+    /* 非主持人时路由已经拦住了 */
+  }
+})
+
+async function copyHostKey() {
+  try {
+    await navigator.clipboard.writeText(hostKey.value)
+    ElMessage.success('已复制房间管理密钥')
+  } catch {
+    ElMessage.info(hostKey.value)
+  }
+}
 
 const weightSum = computed(() =>
   (cfg.value?.dimensions || []).reduce((a, d) => a + (d.weight || 0), 0)
@@ -597,5 +628,15 @@ async function onRestoreFile(ev: Event) {
 }
 .ncm-tag {
   margin-left: 4px;
+}
+.hostkey {
+  background: #f5f6f8;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  user-select: all;
 }
 </style>

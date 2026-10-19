@@ -1,18 +1,28 @@
 <template>
-  <header class="topbar">
+  <header v-if="!isStage" class="topbar">
     <div class="bar-inner">
-      <RouterLink to="/" class="brand">🎵 OP/ED 鉴赏会</RouterLink>
-      <nav class="nav">
+      <RouterLink :to="auth.host ? '/' : '/join'" class="brand">🎵 OP/ED 鉴赏会</RouterLink>
+      <nav v-if="auth.host" class="nav">
         <RouterLink to="/">期次</RouterLink>
         <RouterLink to="/settings">设置</RouterLink>
       </nav>
+      <span v-else class="guest-tag">朋友打分模式</span>
     </div>
   </header>
   <RouterView />
 </template>
 
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { computed, onMounted } from 'vue'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { auth, ensureAccess } from './auth'
+
+const route = useRoute()
+const isStage = computed(() => route.name === 'stage')
+
+onMounted(() => {
+  void ensureAccess()
+})
 </script>
 
 <style scoped>
@@ -44,6 +54,13 @@ import { RouterLink, RouterView } from 'vue-router'
   font-weight: 600;
   border-bottom: 2px solid #fff;
   padding-bottom: 2px;
+}
+.guest-tag {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 20px;
+  padding: 2px 10px;
 }
 /* 手机（打分同学）不看后台导航：期次/设置是房主工具 */
 @media (max-width: 768px) {

@@ -13,13 +13,14 @@
     </div>
 
     <div class="pip-matrix" ref="matrixRef">
-      <div class="pip-row" v-for="pn in cfg.persons" :key="pn">
+      <div class="pip-row" v-for="pn in members" :key="pn">
         <span class="pip-name">{{ pn }}</span>
         <input
           class="pip-in"
           :value="part?.scores[pn] ?? ''"
           :placeholder="`${cfg.scoreMin}-${cfg.scoreMax}`"
-          inputmode="numeric"
+          inputmode="decimal"
+          :disabled="session.done"
           @input="onInput($event, pn)"
           @blur="clamp($event, pn)"
           @keydown.enter.prevent="onEnter($event)"
@@ -27,12 +28,13 @@
         <button
           class="pip-fav"
           :class="{ on: part?.favorites.includes(pn) }"
+          :disabled="session.done"
           @click="toggleFav(pn)"
         >
           ★
         </button>
       </div>
-      <div v-if="!cfg.persons.length" class="pip-empty">先去主界面设置参与人</div>
+      <div v-if="!members.length" class="pip-empty">先去主界面设置参与人</div>
     </div>
 
     <div class="pip-foot">
@@ -70,6 +72,7 @@ const saveText = computed(() =>
 )
 
 const part = computed(() => session.value?.parts[currentIndex.value] ?? null)
+const members = computed(() => session.value?.members || cfg.value?.persons || [])
 const liveAvg = computed(() => {
   const vals = Object.values(part.value?.scores || {}).filter(
     v => typeof v === 'number'
@@ -141,13 +144,14 @@ function clamp(e: Event, pn: string) {
   }
   const min = cfg.value?.scoreMin ?? 1
   const max = cfg.value?.scoreMax ?? 10
-  const c = Math.min(max, Math.max(min, Math.round(Number(raw))))
+  const c = Math.min(max, Math.max(min, Math.round(Number(raw) * 10) / 10))
   scores[pn] = c
   input.value = String(c)
   persist(pn, c)
 }
 
 function toggleFav(pn: string) {
+  if (session.value?.done) return
   const p = part.value!
   const on = p.favorites.includes(pn)
   if (on) p.favorites.splice(p.favorites.indexOf(pn), 1)
