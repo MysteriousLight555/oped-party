@@ -117,7 +117,7 @@ function loadParty(req, res, config) {
     res.status(404).json({ error: '期次不存在' })
     return null
   }
-  normalizeSession(s, config)
+  normalizeSession(s, sessionConfig(s, config))
   return s
 }
 
@@ -382,7 +382,7 @@ app.put(
     if (!ops.length) {
       return ok(res).json({ saved: false, changed: 0, rev: revBefore, conflicts: [] })
     }
-    const r = applyOps(s, ops, { config, actor })
+    const r = applyOps(s, ops, { config: sessionConfig(s, config), actor })
     if (r.changed > 0) saveSession(s)
     ok(res).json({
       saved: r.changed > 0,
@@ -423,7 +423,12 @@ app.put('/api/sessions/:id', hostOnly, (req, res) => {
     (body.settings && typeof body.settings === 'object' && Array.isArray(body.settings.dimensions))
   ) {
     s.settings = body.settings
+    if (!Array.isArray(body.members) && Array.isArray(body.settings?.persons)) {
+      s.members = body.settings.persons.map(cleanMemberName).filter(Boolean).slice(0, 60)
+      membersOf(s, config)
+    }
   }
+  if (s.settings) s.settings.persons = [...membersOf(s, config)]
   if (typeof body.noGlobal === 'boolean') {
     s.noGlobal = body.noGlobal
   }
@@ -681,7 +686,7 @@ app.put(
     if (personComment !== undefined) ops.push({ t: 'personComment', page, person, value: personComment })
     if (!ops.length) return res.status(400).json({ error: '没有要保存的内容' })
 
-    const r = applyOps(s, ops, { config, actor })
+    const r = applyOps(s, ops, { config: sessionConfig(s, config), actor })
     if (r.changed > 0) saveSession(s)
     const visiblePart = actor.role === 'participant'
       ? participantSession(s, config, actor.person).parts.find(p => p.page === page)
@@ -758,7 +763,7 @@ app.post('/api/sessions/:id/import', hostOnly, (req, res) => {
       const part = s.parts.find(p => p.page === Number(page))
       if (!part) continue
       try {
-        const n = normalizeScore(score, config)
+        const n = normalizeScore(score, sessionConfig(s, config))
         if (n === null) {
           delete (part.scores || {})[person]
         } else {
@@ -1213,13 +1218,15 @@ app.post('/api/restore', hostOnly, (req, res) => {
 })
 
 // AI 标题识别：分P标题批量结构化，只补空/弱字段，不覆盖已解析和人工修正的信息
-app.post('/api/sessions/:id/ai-parse', async (req, res) => {
+app.post('/api/sessions/:id/ai-parse', hostOnly, async (req, res) => {
   const session = getSession(req.params.id)
   if (!session) return res.status(404).json({ error: '期次不存在' })
   try {
     const list = await aiParseTitles(loadAiConfig(), session.parts.map(p => p.title))
+    const latest = getSession(session.id)
+    if (!latest) return res.status(404).json({ error: '期次不存在' })
     let applied = 0
-    session.parts.forEach((p, i) => {
+    latest.parts.forEach((p, i) => {
       const e = list[i]
       if (!e) return
       const cur = p.parsed
@@ -1238,8 +1245,8 @@ app.post('/api/sessions/:id/ai-parse', async (req, res) => {
       fill('artist', e.artist)
       p.parsed = next
     })
-    saveSession(session)
-    ok(res).json({ applied, parts: session.parts.map(p => p.parsed) })
+    saveSession(latest)
+    ok(res).json({ applied, parts: latest.parts.map(p => p.parsed) })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

@@ -17,14 +17,13 @@
         <div class="fg-text">
           <b>跟随全局</b>
           <p class="hint">
-            开启后本期实时使用全局配置（适合懒得每期单独调的场次）；关闭则使用下方这份独立快照。
+            开启后维度、标签和分数范围使用全局模板；本场成员始终单独维护。
           </p>
         </div>
         <el-button :disabled="followGlobal" @click="syncFromGlobal">从全局同步一份</el-button>
       </div>
     </el-card>
 
-    <template v-if="!followGlobal">
       <el-card shadow="never" class="mb16">
         <template #header><b>参与人</b>（本期的打分表行列，可增删；删除不丢历史分）</template>
         <div class="chips">
@@ -44,6 +43,7 @@
         </div>
       </el-card>
 
+    <template v-if="!followGlobal">
       <el-card shadow="never" class="mb16">
         <template #header>
           <b>打分维度</b>（权重只用于换算"维度参考分"和反差值，与总分无关）
@@ -147,6 +147,7 @@ onMounted(async () => {
   form.value = s.settings
     ? JSON.parse(JSON.stringify(s.settings))
     : snapshotFrom(sessionConfig(s, c))
+  form.value!.persons = [...(s.members || form.value!.persons)]
   loaded.value = true
 })
 
@@ -205,6 +206,7 @@ async function save() {
     // 只提交设置快照元信息，不碰分数（服务端按字段校验合并）
     await api.updateSessionMeta(sessionId, {
       settings: JSON.parse(JSON.stringify(form.value)) as SessionSettings,
+      members: [...form.value.persons],
       followGlobal: followGlobal.value
     })
     ElMessage.success('本期设置已保存')

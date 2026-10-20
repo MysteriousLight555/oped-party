@@ -401,13 +401,14 @@ async function main() {
     console.log('\n[13] AI 后台任务完成时保留新评分和结束状态（本地模拟服务）')
     let respondToAi
     let aiArrived
+    let aiContent = '本地验收锐评'
     const received = new Promise(resolve => { aiArrived = resolve })
     const provider = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
         respondToAi = () => {
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ choices: [{ message: { content: '本地验收锐评' } }] }))
+          res.end(JSON.stringify({ choices: [{ message: { content: aiContent } }] }))
         }
         aiArrived()
       })
@@ -432,6 +433,30 @@ async function main() {
       eq(latest.parts[0].scores['阿伟'], 9.5, 'AI 返回后保留期间新交的分数')
       eq(latest.done, true, 'AI 返回后保持结束锁定')
       eq(latest.aiReviews[0].text, '本地验收锐评', 'AI 结果正常保存')
+
+      await expectError(
+        () => api('POST', `/sessions/${sessionId}/ai-parse`, { headers: { 'x-participant-token': tokenA } }),
+        403,
+        '朋友不能调用付费 AI 标题识别'
+      )
+      const parseReceived = new Promise(resolve => { aiArrived = resolve })
+      aiContent = JSON.stringify({ list: latest.parts.map((p, i) => ({ page: i + 1, kind: 'OP', anime: '补全番名', song: '补全曲名', artist: '补全歌手' })) })
+      const parsing = api('POST', `/sessions/${sessionId}/ai-parse`, { headers: hostHeaders })
+      await parseReceived
+      await api('POST', `/sessions/${sessionId}/reopen`, { headers: hostHeaders })
+      await api('PUT', `/sessions/${sessionId}/part/1`, {
+        headers: { 'x-participant-token': tokenA }, body: { person: '小林', score: 6.5 }
+      })
+      await api('PUT', `/sessions/${sessionId}/patch`, { headers: hostHeaders, body: {
+        ops: [{ t: 'part', page: 1, field: 'parsed', value: { kind: 'ED', anime: '手动番名', song: '手动曲名', artist: '手动歌手' } }]
+      } })
+      await api('POST', `/sessions/${sessionId}/finish`, { headers: hostHeaders, body: { force: true } })
+      respondToAi()
+      await parsing
+      const parsed = await api('GET', `/sessions/${sessionId}`, { headers: hostHeaders })
+      eq(parsed.parts[0].scores['小林'], 6.5, 'AI 标题识别不覆盖期间新评分')
+      eq(parsed.parts[0].parsed.song, '手动曲名', 'AI 标题识别保留期间人工修正')
+      eq(parsed.done, true, 'AI 标题识别不回退结束状态')
     } finally {
       provider.closeAllConnections()
       await new Promise(resolve => provider.close(resolve))
@@ -439,6 +464,53 @@ async function main() {
 
     await api('PUT', '/ncm/playlist', { headers: hostHeaders, body: { playlistId: '123' } })
     ok(fs.existsSync(path.join(DATA, 'ncm-auth.json')), '网易云配置同样写入隔离数据目录')
+
+    console.log('\n[14] 合并回归：本期快照、房间成员、手机配置和写分范围一致')
+    const scoped = await api('POST', '/sessions', { headers: hostHeaders, body: {
+      mode: 'manual', name: '本期快照回归', lines: ['独立曲目']
+    } })
+    const settings = {
+      persons: ['房主', '朋友'],
+      dimensions: [{ key: 'tone', name: '本期音色', weight: 100, enabled: true }],
+      tags: ['本期标签'], scoreMin: 0, scoreMax: 20
+    }
+    const metadata = await api('PUT', `/sessions/${scoped.id}`, { headers: hostHeaders, body: { settings } })
+    eq(metadata.members, settings.persons, '本期设置修改参与人会同步房间名单')
+    const guest = await api('POST', `/sessions/${scoped.id}/join`, { body: { person: '朋友', pin: scoped.pin } })
+    const guestHeaders = { 'x-participant-token': guest.token }
+    eq(guest.session.settings.scoreMax, 20, '朋友加入响应携带本期分数范围')
+    eq(guest.session.settings.dimensions[0].key, 'tone', '朋友能读取本期自定义维度')
+    const global = await api('GET', '/config')
+    await api('PUT', '/config', { headers: hostHeaders, body: { ...global, scoreMax: 5 } })
+    const own = await api('PUT', `/sessions/${scoped.id}/part/1`, {
+      headers: guestHeaders, body: { person: '朋友', score: 18.5 }
+    })
+    eq(own.scores['朋友'], 18.5, '改全局后仍按本期 0~20 分写入')
+    const dimResult = await api('PUT', `/sessions/${scoped.id}/patch`, { headers: guestHeaders, body: {
+      ops: [{ t: 'dim', page: 1, person: '朋友', dim: 'tone', value: 17 }]
+    } })
+    eq(dimResult.changed, 1, '字段级保存接受本期新维度')
+    const imported = await api('POST', `/sessions/${scoped.id}/import`, { headers: hostHeaders, body: {
+      app: 'oped-party-sheet', sessionId: scoped.id, person: '房主', scores: { 1: 15.5 }
+    } })
+    eq(imported.invalid, 0, '离线导入同样按本期范围校验')
+    const configless = { ...settings, dimensions: [] }
+    await api('PUT', `/sessions/${scoped.id}`, { headers: hostHeaders, body: { settings: configless } })
+    const report = await api('GET', `/sessions/${scoped.id}/report/json`, { headers: hostHeaders })
+    eq(report.config.dimensions, [], '仅打总分时不回退到全局维度')
+    const roster = await api('PUT', `/sessions/${scoped.id}`, { headers: hostHeaders, body: { members: ['房主', '朋友', '新朋友'] } })
+    eq(roster.settings.persons, roster.members, '房间成员修改也同步设置页名单')
+    await api('PUT', `/sessions/${scoped.id}`, { headers: hostHeaders, body: { followGlobal: true } })
+    await expectError(() => api('PUT', `/sessions/${scoped.id}/part/1`, {
+      headers: guestHeaders, body: { person: '朋友', score: 8 }
+    }), 400, '切回跟随全局后使用全局上限')
+    const followed = await api('GET', `/sessions/${scoped.id}`, { headers: guestHeaders })
+    eq(followed.followGlobal, true, '手机端能同步跟随全局开关')
+    eq(followed.members, ['房主', '朋友', '新朋友'], '跟随全局不会改掉本场成员')
+    await api('PUT', `/sessions/${scoped.id}`, { headers: hostHeaders, body: { noGlobal: true } })
+    const aggregate = await api('GET', '/reports/all/json', { headers: hostHeaders })
+    ok(!aggregate.sessions.some(s => s.id === scoped.id), '临时场正确排除出全期总榜')
+    await api('PUT', '/config', { headers: hostHeaders, body: global })
   } finally {
     child.kill()
     await wait(200)

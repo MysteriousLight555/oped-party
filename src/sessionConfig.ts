@@ -6,7 +6,7 @@ import type { Config, Session } from './types'
  */
 export function sessionConfig(session: Session | null | undefined, config: Config): Config {
   const s = session?.settings
-  if (session?.followGlobal !== true && s && Array.isArray(s.dimensions) && s.dimensions.length) {
+  if (session?.followGlobal !== true && s && Array.isArray(s.dimensions)) {
     return {
       persons: Array.isArray(s.persons) ? s.persons : config.persons,
       dimensions: s.dimensions,

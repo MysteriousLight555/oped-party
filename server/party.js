@@ -91,6 +91,7 @@ export function addMember(session, person, config) {
     if (members.length >= 60) throw new HttpError(400, '本场成员太多（上限 60 人）')
     members.push(name)
   }
+  if (session.settings) session.settings.persons = [...members]
   return name
 }
 
@@ -235,6 +236,8 @@ export function participantSession(session, config, person) {
     rev: Number(session.rev) || 0,
     updatedAt: session.updatedAt || null,
     members: live.members,
+    settings: session.settings || null,
+    followGlobal: Boolean(session.followGlobal),
     stage: st,
     parts,
     progress: live.progress,

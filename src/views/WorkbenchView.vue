@@ -766,28 +766,23 @@ function onPersonEnter(e: KeyboardEvent) {
 
 async function addPersonInline() {
   const name = personInline.value.trim()
-  if (!name || !session.value || !globalCfg.value) return
-  personInline.value = ''
-  // 跟随全局（或存量无快照）→ 加进全局模板；有快照 → 加进本期名单（随本期自动保存）
-  if (session.value.followGlobal === true || !session.value.settings) {
-    if (globalCfg.value.persons.includes(name)) {
-      ElMessage.warning('已经有这个人了')
-      return
-    }
-    globalCfg.value.persons.push(name)
-    try {
-      globalCfg.value = await api.saveConfig(globalCfg.value)
-    } catch (e) {
-      ElMessage.error(`保存失败：${(e as Error).message}`)
-      return
-    }
-  } else {
-    if (session.value.settings.persons.includes(name)) {
-      ElMessage.warning('已经有这个人了')
-      return
-    }
-    session.value.settings.persons.push(name)
+  if (!name || !session.value || locked.value) return
+  if (members.value.includes(name)) {
+    ElMessage.warning('已经有这个人了')
+    return
   }
+  try {
+    const r = await api.updateSessionMeta(sessionId, { members: [...members.value, name] })
+    session.value.members = r.members
+    session.value.settings = r.settings || undefined
+    session.value.rev = r.rev
+    if (base) base.members = [...r.members]
+    baseRev = r.rev
+  } catch (e) {
+    ElMessage.error(`保存失败：${(e as Error).message}`)
+    return
+  }
+  personInline.value = ''
   ElMessage.success(`已加入 ${name}`)
   await nextTick()
   const inputs = matrixRef.value?.querySelectorAll<HTMLInputElement>('tbody .sin.total')
@@ -1440,13 +1435,14 @@ const aiParseLoading = ref(false)
 
 async function aiParse() {
   if (!session.value) return
+  if (!(await doSave())) {
+    ElMessage.warning('请先保存当前修改，再识别标题')
+    return
+  }
   aiParseLoading.value = true
   try {
     const r = await api.aiParseTitles(sessionId)
-    r.parts.forEach((parsed, i) => {
-      const p = session.value?.parts[i]
-      if (p) p.parsed = parsed
-    })
+    await refreshSilently()
     ElMessage.success(
       r.applied > 0 ? `AI 已补全 ${r.applied} 个字段，可逐首「修正信息」复核` : '标题信息已经齐全，无需补全'
     )

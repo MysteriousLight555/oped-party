@@ -236,6 +236,7 @@ export async function aiParseTitles(ai, titles) {
   const data = extractJson(content)
   const list = Array.isArray(data) ? data : data.list
   if (!Array.isArray(list)) throw new Error('模型返回的 JSON 缺少 list 字段，请重试')
+  if (list.length !== titles.length) throw new Error('模型返回的条目数与分P数不一致，请重试')
   return list.map((e, i) => ({
     page: i + 1,
     kind: String(e?.kind || '').trim(),

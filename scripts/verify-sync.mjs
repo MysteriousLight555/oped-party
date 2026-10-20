@@ -74,9 +74,10 @@ function fixture() {
 }
 function workbench(api) {
   return load('src/views/WorkbenchView.vue', api, `
-    export { session, doSave, finishParty };
+    export { session, doSave, finishParty, personInline, addPersonInline };
     export function init(s: Session) {
       session.value = cloneData(s); base = cloneData(s); baseRev = s.rev || 0;
+      globalCfg.value = { dimensions: [], persons: ['甲', '乙'], tags: [], scoreMin: 1, scoreMax: 10 };
     }
   `)
 }
@@ -153,6 +154,19 @@ await check('保存失败时保留现场，不直接结束锁定', async () => {
   assert.equal(view.session.value.done, false)
 })
 
+await check('工作台内联加人会保存到本场名单，不修改全局模板', async () => {
+  let submitted
+  const view = workbench({ updateSessionMeta: async (_id, body) => {
+    submitted = body
+    return { members: body.members, rev: 2, settings: null }
+  } })
+  view.init(fixture())
+  view.personInline.value = '新朋友'
+  await view.addPersonInline()
+  assert.deepEqual(submitted.members, ['甲', '乙', '新朋友'])
+  assert.deepEqual([...view.session.value.members], ['甲', '乙', '新朋友'])
+})
+
 await check('同设备给两个人打同一首：离线队列分别保留，联网后都提交', async () => {
   const sent = []
   const { createSheetSaveQueue } = load('src/sheet-sync.ts', {
@@ -215,7 +229,7 @@ await check('手机交分成功后，迟到的旧轮询响应不能盖回旧分�
     export { session, queue, refreshRemote, setScore };
     export function init(s: Session) {
       session.value = s; tokenPerson.value = '甲';
-      cfg.value = { dimensions: [], persons: ['甲', '乙'], tags: [], scoreMin: 1, scoreMax: 10 };
+      globalCfg.value = { dimensions: [], persons: ['甲', '乙'], tags: [], scoreMin: 1, scoreMax: 10 };
     }
   `)
   const old = fixture()

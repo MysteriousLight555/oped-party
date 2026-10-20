@@ -17,7 +17,7 @@ export function enabledDims(config) {
  */
 export function sessionConfig(session, config) {
   const s = session?.settings
-  if (session?.followGlobal !== true && s && Array.isArray(s.dimensions) && s.dimensions.length) {
+  if (session?.followGlobal !== true && s && Array.isArray(s.dimensions)) {
     return {
       persons: Array.isArray(s.persons) ? s.persons : config?.persons || [],
       dimensions: s.dimensions,
