@@ -21,7 +21,13 @@ const BASE_DIR = path.join(OUT_DIR, 'oped-party')
 const APP_DIR = path.join(BASE_DIR, 'app')
 const ZIP_PATH = path.join(ROOT, 'build', `oped-party-v${VERSION}-win64.zip`)
 
-const rmrf = p => fs.rmSync(p, { recursive: true, force: true })
+const rmrf = p => {
+  const relative = path.relative(path.join(ROOT, 'build'), path.resolve(p))
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`清理路径不在 build 目录内：${p}`)
+  }
+  fs.rmSync(p, { recursive: true, force: true })
+}
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true })
   for (const name of fs.readdirSync(src)) {
