@@ -111,6 +111,17 @@ export const api = {
     ),
   deleteSession: (id: string) => req<{ deleted: boolean }>(`/sessions/${id}`, { method: 'DELETE' }),
 
+  /** 持续更新的合集：重新拉取分P列表增量合并（评分原样保留，只补新分P） */
+  syncParts: (id: string) =>
+    req<{
+      added: number
+      updated: number
+      removed: number
+      total: number
+      enhancedNew: boolean
+      rev: number
+    }>(`/sessions/${id}/sync-parts`, { method: 'POST' }),
+
   /** 字段级合并写入（工作台自动保存）：只提交改过的格子 */
   patchSession: (id: string, ops: SessionOp[], baseRev: number) =>
     req<PatchResult>(`/sessions/${id}/patch`, {

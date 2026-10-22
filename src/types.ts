@@ -218,6 +218,9 @@ export interface SessionMeta {
   members?: number
   complete?: number
   noGlobal?: boolean
+  /** 分P总数 / 其中标题未完全解析的首数（老后端可能没有） */
+  parts?: number
+  parsedWeak?: number
 }
 
 export interface Dim {

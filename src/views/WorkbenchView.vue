@@ -55,6 +55,14 @@
       >
         ⚙ 本期设置
       </el-button>
+      <el-button
+        v-if="session.bvid"
+        :loading="syncPartsLoading"
+        title="持续更新的合集每周会加新分P：重新拉取列表增量合并，已打的分原样保留"
+        @click="syncParts"
+      >
+        🔄 同步分P
+      </el-button>
       <el-tooltip
         content="分P标题解析不理想时，把标题列表发给大模型批量补全（只补空字段，不覆盖已解析和人工修正的内容；需在设置页配 Key）"
         placement="bottom"
@@ -97,6 +105,19 @@
         </template>
       </el-dropdown>
     </div>
+
+    <el-alert
+      v-if="weakParsedCount > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="mb12"
+    >
+      <template #title>
+        有 {{ weakParsedCount }} 首标题没解析完整（类型 / 番剧 / 曲名有空缺）
+      </template>
+      建议点「🤖 AI 识别标题」批量补全（只补空缺，不覆盖已解析和人工修正的内容），或逐首「修正信息」。
+    </el-alert>
 
     <el-alert v-if="members.length === 0" type="warning" show-icon :closable="false" class="mb12">
       本场还没有成员：点上方「📨 邀请」把链接发给朋友，他们加入后会自动进名单；你也想打分就点「👥 成员」把自己加进来。
@@ -680,6 +701,14 @@ const votedCount = computed(
 )
 const totalActive = computed(
   () => (session.value?.parts || []).filter(p => !p.skipped).length
+)
+// 标题解析不完整的分P数：类型/番剧/曲名有空缺，或曲名仍等于原始标题
+const weakParsedCount = computed(
+  () =>
+    (session.value?.parts || []).filter(p => {
+      const t = p.parsed || { kind: '', anime: '', song: '', artist: '' }
+      return !t.kind || !t.anime || !t.song || t.song === p.title
+    }).length
 )
 const completeCount = computed(() => {
   const list = members.value
@@ -1450,6 +1479,34 @@ async function aiParse() {
     ElMessage.error((e as Error).message)
   } finally {
     aiParseLoading.value = false
+  }
+}
+
+// ---------- 分P同步（持续更新的合集每周加歌，评分原样保留只补新分P） ----------
+const syncPartsLoading = ref(false)
+
+async function syncParts() {
+  if (!session.value) return
+  if (!(await doSave())) {
+    ElMessage.warning('请先保存当前修改，再同步')
+    return
+  }
+  syncPartsLoading.value = true
+  try {
+    const r = await api.syncParts(sessionId)
+    await refreshSilently()
+    if (r.added === 0 && r.updated === 0 && r.removed === 0) {
+      ElMessage.success('分P列表已是最新，没有变化')
+    } else {
+      const bits = [`新增 ${r.added} 首`]
+      if (r.updated) bits.push(`更新 ${r.updated} 首`)
+      if (r.removed) bits.push(`B站已删 ${r.removed} 首（保留在期末）`)
+      ElMessage.success(`${bits.join('，')}，现共 ${r.total} 首${r.enhancedNew ? '；新分P已用简介曲目单辅助解析' : ''}`)
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    syncPartsLoading.value = false
   }
 }
 

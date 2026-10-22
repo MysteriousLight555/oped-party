@@ -57,6 +57,15 @@
             <span class="sc-name">{{ s.name }}</span>
             <el-tag v-if="s.done" size="small" type="success" effect="plain">已完成</el-tag>
             <el-tag v-if="s.noGlobal" size="small" type="info" effect="plain">不计入总榜</el-tag>
+            <el-tag
+              v-if="s.parsedWeak"
+              size="small"
+              type="warning"
+              effect="plain"
+              :title="`${s.parsedWeak}/${s.parts || s.total} 首标题没解析完整，进工作台可 AI 识别补全`"
+            >
+              ⚠ {{ s.parsedWeak }} 首未识别
+            </el-tag>
           </div>
           <div class="sc-meta">
             <a v-if="s.bvid" :href="`https://www.bilibili.com/video/${s.bvid}`" target="_blank">{{
