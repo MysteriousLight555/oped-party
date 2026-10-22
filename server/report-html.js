@@ -208,6 +208,12 @@ const LEGEND =
   '<span class="dv pos">Δ+</span>=情怀溢价 / <span class="dv neg">Δ−</span>=套路压分（反差 = 主观总评 − 维度参考分，参考分按 音乐本体/音画定制/本格共鸣 加权）· ' +
   '争议 = 大家总分的标准差'
 
+/** 未评/跳过清单过长时只列前 10 首并折叠，完整清单放在 title 悬浮里 */
+function briefTitles(titles) {
+  if (titles.length <= 20) return titles.join('、')
+  return `${titles.slice(0, 10).join('、')}……等 ${titles.length} 首`
+}
+
 function podium(st, session) {
   const medals = ['🥇', '🥈', '🥉']
   const classes = ['p1', 'p2', 'p3']
@@ -367,8 +373,8 @@ ${st.favorites
   const restSection =
     st.unscored.length || st.skipped.length
       ? `<section id="rest"><h2>未评 / 跳过</h2>
-${st.unscored.length ? `<p class="mini">未评 ${st.unscored.length} 首：${st.unscored.map(r => esc(songTitle(r.part))).join('、')}</p>` : ''}
-${st.skipped.length ? `<p class="mini">跳过 ${st.skipped.length} 首：${st.skipped.map(p => esc(songTitle(p))).join('、')}</p>` : ''}
+${st.unscored.length ? `<p class="mini" title="${esc(st.unscored.map(r => songTitle(r.part)).join('、'))}">未评 ${st.unscored.length} 首：${briefTitles(st.unscored.map(r => esc(songTitle(r.part))))}</p>` : ''}
+${st.skipped.length ? `<p class="mini" title="${esc(st.skipped.map(p => songTitle(p)).join('、'))}">跳过 ${st.skipped.length} 首：${briefTitles(st.skipped.map(p => esc(songTitle(p))))}</p>` : ''}
 </section>`
       : ''
 

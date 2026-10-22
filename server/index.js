@@ -319,6 +319,11 @@ app.get('/api/sessions', hostOnly, (req, res) => {
   const config = loadConfig()
   const list = listSessions().map(s => {
     const st = sessionStats(s, config)
+    // 解析质量：kind/番剧/曲名齐全才算完整（曲名仍等于原始标题视为没解析出来）
+    const parsedWeak = (s.parts || []).filter(p => {
+      const t = p.parsed || {}
+      return !t.kind || !t.anime || !t.song || t.song === p.title
+    }).length
     return {
       id: s.id,
       name: s.name,
@@ -333,7 +338,9 @@ app.get('/api/sessions', hostOnly, (req, res) => {
       voted: st.votedCount,
       complete: st.completeCount,
       members: st.members.length,
-      skipped: st.skipped.length
+      skipped: st.skipped.length,
+      parts: (s.parts || []).length,
+      parsedWeak
     }
   })
   ok(res).json(list)
@@ -376,7 +383,17 @@ app.put(
         code: 'SESSION_CLOSED'
       })
     }
-    const ops = Array.isArray(req.body?.ops) ? req.body.ops : []
+    const body = req.body || {}
+    // 旧版整包回写（{page, scores, dimScores}）到这里只会被静默忽略，明确报 400 提示改用 ops 协议
+    if (body.ops === undefined && Object.keys(body).length > 0) {
+      return res.status(400).json({
+        error: '请使用字段级 ops 协议：{ ops: [{ t: "score" | "dim" | "tags" | "personComment" | "fav" | "part", page, person, value }] }'
+      })
+    }
+    if (body.ops !== undefined && !Array.isArray(body.ops)) {
+      return res.status(400).json({ error: 'ops 必须是数组' })
+    }
+    const ops = Array.isArray(body.ops) ? body.ops : []
     const revBefore = Number(s.rev) || 0
     const baseRev = req.body?.baseRev
     if (!ops.length) {
@@ -449,6 +466,86 @@ app.delete('/api/sessions/:id', hostOnly, (req, res) => {
   deleteSession(req.params.id)
   ok(res).json({ deleted: true })
 })
+
+/**
+ * 持续更新的合集（如「10月新番OPED合集（持续更新中）」）每周都会加新分P。
+ * 重新拉取分P列表按 cid 增量合并：已有分P的评分/维度/标签/短评/收藏原样保留，
+ * 标题以B站最新为准（uploader 改错别字能跟上），新增分P按老规则解析，
+ * B站侧已删除的分P不丢弃（挪到期末，避免误删大家的分数）。
+ */
+app.post('/api/sessions/:id/sync-parts', hostOnly, wrap(async (req, res) => {
+  const config = loadConfig()
+  const s = loadParty(req, res, config)
+  if (!s) return
+  if (!s.bvid) return res.status(400).json({ error: '手动导入的期次没有关联B站视频，无法同步' })
+
+  let video
+  try {
+    video = await fetchVideo(s.bvid, { refresh: true })
+  } catch (e) {
+    return res.status(502).json({ error: `B站接口调用失败：${e.message}，稍后再试` })
+  }
+
+  const byCid = new Map(s.parts.filter(p => p.cid > 0).map(p => [p.cid, p]))
+  const freshCids = new Set(video.parts.filter(p => p.cid > 0).map(p => p.cid))
+  const merged = []
+  const newParts = []
+  let updated = 0
+  for (const p of video.parts) {
+    const old = p.cid > 0 ? byCid.get(p.cid) : undefined
+    if (old) {
+      if (old.title !== p.part || old.duration !== (p.duration || 0) || old.page !== p.page) updated += 1
+      old.title = p.part
+      old.duration = p.duration || 0
+      old.page = p.page
+      merged.push(old)
+    } else {
+      const part = {
+        page: p.page,
+        cid: p.cid || 0,
+        title: p.part,
+        duration: p.duration || 0,
+        parsed: parseTitle(p.part),
+        scores: {},
+        dimScores: {},
+        personTags: {},
+        personComments: {},
+        favorites: [],
+        comment: '',
+        tags: [],
+        skipped: false
+      }
+      merged.push(part)
+      newParts.push(part)
+    }
+  }
+  // B站侧已消失的分P：保留在期末，页码顺延避免与新增分P撞号
+  const removed = s.parts.filter(p => !(p.cid > 0 && freshCids.has(p.cid)))
+  let nextPage = merged.reduce((m, p) => Math.max(m, p.page), 0)
+  for (const p of removed) {
+    p.page = ++nextPage
+    merged.push(p)
+  }
+  // 新增分P数量恰好和简介曲目单对得上时，蹭一次简介辅助解析
+  const enhancedNew = newParts.length ? applyDescEnhance(newParts, video.desc || '') : false
+
+  s.parts = merged
+  if (video.title && video.title !== s.videoTitle) s.videoTitle = video.title
+  if (video.cover) s.cover = video.cover
+  if (typeof video.desc === 'string') s.desc = video.desc
+  if (!s.parts.some(p => p.page === s.stage.currentPage)) {
+    s.stage.currentPage = s.parts.find(p => !p.skipped)?.page ?? null
+  }
+  saveSession(s)
+  ok(res).json({
+    added: newParts.length,
+    updated,
+    removed: removed.length,
+    total: s.parts.length,
+    enhancedNew,
+    rev: s.rev
+  })
+}))
 
 // ---------- 当前曲 / 独立评分 / 结束锁定 ----------
 app.put(

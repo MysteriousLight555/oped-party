@@ -150,14 +150,20 @@ function renderSessionMd(session, st) {
 
   if (st.unscored.length) {
     lines.push(`## 未评（${st.unscored.length} 首）`, '')
-    lines.push(st.unscored.map(r => songTitle(r.part)).join('、'), '')
+    lines.push(briefList(st.unscored.map(r => songTitle(r.part))), '')
   }
   if (st.skipped.length) {
     lines.push(`## 跳过（${st.skipped.length} 首）`, '')
-    lines.push(st.skipped.map(p => songTitle(p)).join('、'), '')
+    lines.push(briefList(st.skipped.map(p => songTitle(p))), '')
   }
 
   return lines.join('\n')
+}
+
+/** 未评/跳过清单过长时只列前 10 首并折叠，避免刷屏（138 首合集全部平铺一行没法看） */
+function briefList(titles) {
+  if (titles.length <= 20) return titles.join('、')
+  return `${titles.slice(0, 10).join('、')}……等 ${titles.length} 首`
 }
 
 function renderAllMd(sessions, st) {
