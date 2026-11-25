@@ -83,10 +83,12 @@
           />
         </div>
         <div class="sc-actions" @click.stop>
-          <el-button @click="openInvite(s)">📨 邀请</el-button>
-          <el-button type="primary" @click="go(s.id)">继续打分</el-button>
-          <el-dropdown trigger="click">
-            <el-button>报告 ↓</el-button>
+          <el-button type="primary" class="sc-action sc-action-primary" @click="go(s.id)">
+            {{ s.done ? '查看本期' : '继续打分' }}
+          </el-button>
+          <el-button class="sc-action" @click="openInvite(s)">邀请</el-button>
+          <el-dropdown trigger="click" placement="bottom-end">
+            <el-button class="sc-action sc-action-report">报告</el-button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="preview(api.sessionReport(s.id, 'html', true))"
@@ -107,8 +109,10 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-dropdown trigger="click">
-            <el-button>⋯</el-button>
+          <el-dropdown trigger="click" placement="bottom-end">
+            <el-button class="sc-action sc-action-more" aria-label="更多操作" title="更多操作">
+              <span aria-hidden="true">⋯</span>
+            </el-button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="download(api.sheetUrl(s.id))">
@@ -520,6 +524,11 @@ async function onImportFiles(e: Event) {
   font-size: 13px;
   font-weight: 400;
 }
+.agg-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .session-list {
   display: flex;
   flex-direction: column;
@@ -555,7 +564,79 @@ async function onImportFiles(e: Event) {
 }
 .sc-actions {
   display: flex;
-  gap: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   flex-shrink: 0;
+  max-width: 100%;
+}
+.agg-btns :deep(.el-button + .el-button),
+.sc-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+.sc-action {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-weight: 500;
+  --el-button-text-color: #414855;
+  --el-button-border-color: #e0e4eb;
+  --el-button-hover-text-color: #8e214a;
+  --el-button-hover-border-color: #edc7d5;
+  --el-button-hover-bg-color: #fff4f8;
+  --el-button-active-text-color: #8e214a;
+  --el-button-active-border-color: #e4acc1;
+  --el-button-active-bg-color: #fce8f0;
+}
+.sc-action-primary {
+  font-weight: 600;
+  --el-button-bg-color: #ac2559;
+  --el-button-border-color: #ac2559;
+  --el-button-text-color: #fff;
+  --el-button-hover-bg-color: #91204b;
+  --el-button-hover-border-color: #91204b;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-bg-color: #7b1b40;
+  --el-button-active-border-color: #7b1b40;
+  --el-button-active-text-color: #fff;
+}
+.sc-action:focus-visible {
+  outline: 2px solid #ac2559;
+  outline-offset: 2px;
+}
+.sc-action-report {
+  gap: 7px;
+}
+.sc-action-report::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+.sc-action-more {
+  width: 36px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  --el-button-bg-color: #f6f7fa;
+  --el-button-border-color: #f6f7fa;
+}
+@media (max-width: 720px) {
+  .session-card :deep(.el-card__body) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 16px;
+  }
+}
+@media (max-width: 380px) {
+  .sc-actions { gap: 6px; }
+  .sc-action:not(.sc-action-more) { padding-inline: 9px; }
+}
+@media (pointer: coarse) {
+  .sc-action { height: 44px; }
+  .sc-action-more { width: 44px; }
 }
 </style>

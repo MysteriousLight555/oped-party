@@ -1948,9 +1948,17 @@ function fmtDur(sec: number) {
 .wb-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 14px;
   flex-wrap: wrap;
+}
+.wb-head :deep(.el-button + .el-button),
+.sh-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+.wb-head :deep(.el-button),
+.sh-actions :deep(.el-button) {
+  border-radius: 8px;
 }
 .wb-title { flex: 1; min-width: 200px; }
 .wb-title b { font-size: 18px; margin-right: 10px; }
@@ -2101,7 +2109,12 @@ function fmtDur(sec: number) {
 .kindtag { margin-right: 6px; vertical-align: 2px; }
 .sh-meta { color: #61666d; font-size: 14px; }
 .liveavg { color: #fb7299; font-size: 15px; }
-.sh-actions { display: flex; gap: 0; flex-shrink: 0; }
+.sh-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
 
 .matrix table {
   width: 100%;
