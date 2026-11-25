@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
+import { publicInviteBase } from './invite.js'
 import {
   loadConfig,
   saveConfig,
@@ -71,6 +72,15 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // 端口避开常见服务（4310 是 OpenTelemetry 默认端口，本机可能有采集端点占用 IPv6 侧）
 const PORT = Number(process.env.PORT || 18890)
 const HOST = process.env.HOST || '127.0.0.1'
+function lanAddress() {
+  return Object.values(os.networkInterfaces()).flat().find(i => i?.family === 'IPv4' && !i.internal)?.address
+}
+
+function localInviteBase() {
+  const host = HOST === '0.0.0.0' || HOST === '::' ? lanAddress() || '127.0.0.1' : HOST
+  return `http://${host.includes(':') ? `[${host}]` : host}:${PORT}`
+}
+
 const app = express()
 app.disable('x-powered-by')
 app.use(express.json({ limit: '8mb' }))
@@ -180,6 +190,10 @@ app.post('/api/host/claim', (req, res) => {
 app.get('/api/host/key', hostOnly, (req, res) => {
   ok(res).json({ key: getHostKey() })
 })
+
+app.get('/api/invite/addresses', hostOnly, wrap(async (req, res) => {
+  ok(res).json({ local: localInviteBase(), public: await publicInviteBase(PORT) })
+}))
 
 app.get(
   '/api/qr',
@@ -1376,9 +1390,7 @@ app.use((err, req, res, next) => {
 app.use((req, res) => res.status(404).json({ error: 'not found' }))
 
 app.listen(PORT, HOST, () => {
-  const lan = Object.values(os.networkInterfaces())
-    .flat()
-    .find(i => i && i.family === 'IPv4' && !i.internal)?.address
+  const lan = lanAddress()
   console.log(`[oped-party] 本机地址：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`)
   if (lan) console.log(`[oped-party] 局域网地址：http://${lan}:${PORT}（同一 WiFi 的朋友可用）`)
   console.log(`[oped-party] 数据目录 ${DATA_DIR}`)

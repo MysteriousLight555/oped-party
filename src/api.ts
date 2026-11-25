@@ -57,6 +57,7 @@ export const api = {
       body: JSON.stringify({ key })
     }),
   hostKeyInfo: () => req<{ key: string }>('/host/key'),
+  inviteAddresses: () => req<{ local: string; public: string | null }>('/invite/addresses'),
 
   // ---------- 邀请 / 加入 ----------
   joinSessions: () => req<JoinSummary[]>('/join/sessions'),

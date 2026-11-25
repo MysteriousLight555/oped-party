@@ -5,7 +5,6 @@
     width="540px"
     top="6vh"
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
-    @open="initFields"
   >
     <template v-if="session">
       <div class="inv-head">
@@ -17,36 +16,44 @@
         把这个链接发给朋友，他们打开后选名字、输口令就能打分。主持人页面不要发出去。
       </p>
 
+      <div class="inv-address">
+        <el-radio-group v-model="mode" size="small" aria-label="邀请地址类型">
+          <el-radio-button value="local">本地</el-radio-button>
+          <el-radio-button value="public">公网</el-radio-button>
+        </el-radio-group>
+        <span v-if="mode === 'public' && activePublic && manualBase === null" class="inv-connected">已识别公网隧道</span>
+      </div>
+
       <div class="inv-link">
         <el-input v-model="link" readonly>
           <template #prepend>参与链接</template>
         </el-input>
-        <el-button type="primary" @click="copy(link, '参与链接')">复制</el-button>
+        <el-button type="primary" :disabled="!link" @click="copy(link, '参与链接')">复制</el-button>
       </div>
 
       <div class="inv-qr">
         <img v-if="qrSrc" :src="qrSrc" alt="参与链接二维码" class="qr-img" />
         <div v-else class="qr-placeholder">
-          {{ qrError || '二维码生成中…' }}
+          {{ link ? qrError || '二维码生成中…' : '等待有效地址' }}
         </div>
         <div class="qr-side">
-          <p>手机扫码直接进本场打分页。</p>
-          <p v-if="baseIsLoopback" class="warn">
-            这是本机地址（{{ baseInput }}），朋友打不开。同一 WiFi 请填本机局域网地址（如
-            <code>http://192.168.x.x:18890</code>）；异地朋友请先运行「开远程打分.bat」，
-            把打印的 <code>https://xxx.trycloudflare.com</code> 填到下面。
+          <p v-if="mode === 'local' && baseIsLoopback" class="warn">
+            本机地址只能在这台电脑打开。同一 WiFi 可填可访问的局域网地址，异地朋友请切到「公网」。
           </p>
-          <p v-else-if="baseIsLan" class="warn">
-            当前是局域网地址，同一 WiFi 的朋友可以扫码；异地朋友请先运行「开远程打分.bat」，
-            把打印的 <code>https://xxx.trycloudflare.com</code> 填到下面。
+          <p v-else-if="mode === 'public' && !activePublic && !link" class="warn">
+            等待公网隧道连接。也可以运行「开远程打分.bat」重试，或手动填写公网地址。
           </p>
+          <p v-else>朋友打开参与链接或扫码加入本期。</p>
           <el-input
             v-model="baseInput"
             size="small"
-            placeholder="参与链接的根地址，如 https://xxx.trycloudflare.com"
+            :placeholder="mode === 'public' ? '等待公网地址或手动填写' : '本机或局域网地址'"
           >
             <template #prepend>根地址</template>
           </el-input>
+          <el-button v-if="manualBase !== null" link size="small" type="primary" @click="resetBase">
+            恢复自动地址
+          </el-button>
         </div>
       </div>
 
@@ -70,7 +77,7 @@
       </div>
 
       <div class="inv-copybar">
-        <el-button @click="copyInviteText">复制邀请文案（含口令）</el-button>
+        <el-button :disabled="!link" @click="copyInviteText">复制邀请文案（含口令）</el-button>
       </div>
 
       <el-alert
@@ -85,7 +92,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import type { Session } from '../types'
@@ -96,85 +103,117 @@ const emit = defineEmits<{
   changed: [patch: { pin?: string; stage?: Session['stage'] }]
 }>()
 
-const baseInput = ref('')
+type AddressMode = 'local' | 'public'
+const localRootKey = 'oped-invite-local'
+const publicRootKey = 'oped-invite-public'
+const manualLocal = ref<string | null>(null)
+const manualPublic = ref<string | null>(null)
+const mode = ref<AddressMode>('public')
+const localBase = ref('')
+const activePublic = ref('')
 const pinDraft = ref('')
 const blind = ref(false)
 const savingPin = ref(false)
 const qrSrc = ref('')
 const qrError = ref('')
-let qrObjectUrl = ''
-let qrTimer: number | undefined
 
-const cleanBase = computed(() =>
-  baseInput.value
-    .trim()
-    .replace(/#.*$/, '')
-    .replace(/\/+$/, '')
-)
-const link = computed(() =>
-  props.session ? `${cleanBase.value}/#/join/${props.session.id}` : ''
-)
-const baseIsLoopback = computed(() =>
-  /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(cleanBase.value)
-)
-const baseIsLan = computed(() =>
-  /^https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?::\d+)?$/.test(
-    cleanBase.value
-  )
-)
+function normalizeBase(value: string) {
+  try {
+    const url = new URL(value.trim())
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return ''
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
 
-function initFields() {
-  if (!props.session) return
+const loopback = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(?=[:/]|$)/i
+const lan = /^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(?=[:/]|$)/i
+const quickTunnel = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com(?=[:/]|$)/i
+const browserBase = normalizeBase(location.href)
+const browserLocal = loopback.test(browserBase) || lan.test(browserBase)
+const browserPublic = browserLocal ? '' : browserBase
+const detectedPublic = computed(() => activePublic.value || browserPublic)
+const manualBase = computed(() => mode.value === 'public' ? manualPublic.value : manualLocal.value)
+const baseInput = computed({
+  get: () => manualBase.value ?? (mode.value === 'public' ? detectedPublic.value : localBase.value),
+  set: value => {
+    const isPublic = mode.value === 'public'
+    const draft = isPublic ? manualPublic : manualLocal
+    const key = isPublic ? publicRootKey : localRootKey
+    draft.value = value
+    const clean = normalizeBase(value)
+    if (clean && !quickTunnel.test(clean)) localStorage.setItem(key, clean)
+    else localStorage.removeItem(key)
+  }
+})
+const cleanBase = computed(() => normalizeBase(baseInput.value))
+const baseIsLoopback = computed(() => loopback.test(cleanBase.value))
+const link = computed(() => props.session && cleanBase.value ? `${cleanBase.value}/#/join/${props.session.id}` : '')
+
+function resetBase() {
+  baseInput.value = ''
+  if (mode.value === 'public') manualPublic.value = null
+  else manualLocal.value = null
+}
+
+watch(() => props.modelValue, (open, _, onCleanup) => {
+  if (!open || !props.session) return
   pinDraft.value = props.session.pin || ''
   blind.value = Boolean(props.session.stage?.blind)
-  const remembered = localStorage.getItem('oped-invite-base') || ''
-  const current = `${location.origin}${location.pathname}`.replace(/\/+$/, '')
-  baseInput.value = remembered || current
-  void refreshQr()
-}
+  localBase.value = browserLocal ? browserBase : ''
+  activePublic.value = ''
 
-watch(
-  () => props.modelValue,
-  open => {
-    if (open) initFields()
+  const remembered = normalizeBase(localStorage.getItem('oped-invite-base') || '')
+  const rememberedLocal = loopback.test(remembered) || lan.test(remembered)
+  if (remembered && remembered !== browserBase && !quickTunnel.test(remembered)) {
+    const key = rememberedLocal ? localRootKey : publicRootKey
+    if (!localStorage.getItem(key)) localStorage.setItem(key, remembered)
   }
-)
+  localStorage.removeItem('oped-invite-base')
+  manualLocal.value = localStorage.getItem(localRootKey)
+  manualPublic.value = localStorage.getItem(publicRootKey)
+  mode.value = 'public'
 
-function revokeQr() {
-  if (qrObjectUrl) URL.revokeObjectURL(qrObjectUrl)
-  qrObjectUrl = ''
+  let openNow = true
+  async function refreshAddresses() {
+    try {
+      const addresses = await api.inviteAddresses()
+      if (!openNow) return
+      localBase.value = lan.test(browserBase) ? browserBase : addresses.local
+      activePublic.value = addresses.public ?? ''
+    } catch {
+      if (openNow) activePublic.value = ''
+    }
+  }
+  void refreshAddresses()
+  const timer = window.setInterval(refreshAddresses, 4000)
+  onCleanup(() => {
+    openNow = false
+    window.clearInterval(timer)
+  })
+}, { immediate: true })
+
+watch([link, () => props.modelValue], ([target, open], _, onCleanup) => {
   qrSrc.value = ''
-}
-
-async function refreshQr() {
-  if (!props.modelValue || !props.session || !link.value) return
   qrError.value = ''
-  try {
-    const url = await api.qrObjectUrl(link.value)
-    revokeQr()
-    qrObjectUrl = url
-    qrSrc.value = url
-  } catch (e) {
-    qrError.value = (e as Error).message
-  }
-}
-
-watch([link, () => props.modelValue], () => {
-  if (!props.modelValue) {
-    revokeQr()
-    return
-  }
-  window.clearTimeout(qrTimer)
-  qrTimer = window.setTimeout(() => {
-    localStorage.setItem('oped-invite-base', cleanBase.value)
-    void refreshQr()
-  }, 350)
-})
-
-onBeforeUnmount(() => {
-  window.clearTimeout(qrTimer)
-  revokeQr()
-})
+  if (!target || !open) return
+  let valid = true
+  const timer = window.setTimeout(async () => {
+    try {
+      const url = await api.qrObjectUrl(target)
+      if (valid) qrSrc.value = url
+      else URL.revokeObjectURL(url)
+    } catch (e) {
+      if (valid) qrError.value = (e as Error).message
+    }
+  }, 250)
+  onCleanup(() => {
+    valid = false
+    window.clearTimeout(timer)
+    if (qrSrc.value) URL.revokeObjectURL(qrSrc.value)
+  })
+}, { immediate: true })
 
 async function copy(text: string, label: string) {
   try {
@@ -186,7 +225,7 @@ async function copy(text: string, label: string) {
 }
 
 function copyInviteText() {
-  if (!props.session) return
+  if (!props.session || !link.value) return
   const pin = props.session.pin
   const text = `「${props.session.name}」在线打分：${link.value}${pin ? `（房间口令 ${pin}）` : ''}`
   copy(text, '邀请文案')
@@ -246,6 +285,8 @@ async function reveal() {
 .inv-head b { font-size: 16px; }
 .inv-head span { color: #9499a0; font-size: 12.5px; }
 .inv-tip { color: #61666d; font-size: 13px; margin: 0 0 12px; line-height: 1.6; }
+.inv-address { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.inv-connected { color: #2d7342; font-size: 12px; }
 .inv-link { display: flex; gap: 8px; }
 .inv-qr {
   display: flex;
@@ -281,7 +322,6 @@ async function reveal() {
 .qr-side { flex: 1; min-width: 0; font-size: 12.5px; color: #61666d; }
 .qr-side p { margin: 0 0 8px; line-height: 1.6; }
 .qr-side .warn { color: #b88230; background: #fdf6ec; border-radius: 6px; padding: 6px 8px; }
-.qr-side code { background: #fff; padding: 0 3px; border-radius: 3px; }
 .inv-row {
   display: flex;
   align-items: center;
